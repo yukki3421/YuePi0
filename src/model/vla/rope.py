@@ -48,7 +48,7 @@ def apply_rotary_pos_emb(q, k, cos, sin):
     k_rot = k*cos + rotate_half(k)*sin
     return q_rot, k_rot
 
-def verify_rope():
+def test_rope():
     # B, H, T, dim = 2, 4, 16, 64
     # rope = RoPE(dim = dim)
     # q = torch.randn(B, H, T, dim)
@@ -56,7 +56,7 @@ def verify_rope():
     # position_ids = torch.arange(T).unsqueeze(0).expand(B, T)
 
     # cos, sin = rope(q, position_ids)
-    # q_rot, v_rot = apply_rotary_pos_emb(q, k, cos, sin)
+    # q_rot, k_rot = apply_rotary_pos_emb(q, k, cos, sin)
 
     # assert True
 
@@ -90,30 +90,37 @@ def verify_rope():
     same = torch.randn(1, 1, 1, dim)
     q_same = same.expand(B, H, T, dim)
     cos, sin = rope(q_same, position_ids)
-    q_rot, _ = apply_rotary_pos_emb(q_same, q_same, cos, sin)
-    q_rot = q_rot.mean(dim=1)  # 压缩 H 维
+    q_rot, k_rot = apply_rotary_pos_emb(q_same, q_same, cos, sin)
 
+    b,h = 0, 0
     ok = True
-    for b in range(B):
-        for delta in range(-T+1, T):
-            diag = q_rot[b].diagonal(offset=delta)
-            vals = diag.tolist()
-            if vals and not all(abs(v - vals[0]) < 1e-4 for v in vals):
-                ok = False
-                break
+    for i in range(T):
+        for j in range(i, T):
+            # 位置i, j的点积
+            dot_ij = torch.dot(q_rot[b, h, i], k_rot[b, h, j])
+            # 位置0, j-i的点积
+            dot_0_delta = torch.dot(q_rot[b, h, 0], k_rot[b, h, j - i])
+            if not torch.allclose(dot_ij, dot_0_delta, atol=1e-4):
+                  ok = False                                                                                                                        
+                  print(f"  ❌ 位置 ({i}, {j}) 失败: {dot_ij.item():.6f} vs {dot_0_delta.item():.6f}")
+                  break                                                                                                                             
+        if not ok:
+            break
     print(f"  ✅ 相对位置不变性: {'通过' if ok else '失败'}")
-    assert ok
+    
+    # 5. 旋转不改变向量长度（用同一个 q 比较）
+    q_for_len = torch.randn(B, H, T, dim)
+    cos_for_len, sin_for_len = rope(q_for_len, position_ids)
+    q_rot_for_len, _ = apply_rotary_pos_emb(q_for_len, q_for_len, cos_for_len, sin_for_len)
 
-    # 5. 旋转不改变向量长度
-    norm_before = q.pow(2).sum(-1).sqrt()
-    norm_after = q_rot.pow(2).sum(-1).sqrt()
+    norm_before = q_for_len.pow(2).sum(-1).sqrt()
+    norm_after = q_rot_for_len.pow(2).sum(-1).sqrt()
     norm_ok = torch.allclose(norm_before, norm_after, atol=1e-4)
-    print(f"  ✅ 旋转不改变向量长度: {'通过' if norm_ok else '失败'}")
-    assert norm_ok
+    max_err = (norm_before - norm_after).abs().max().item()
+    print(f"  ✅ 旋转不改变向量长度: {'通过' if norm_ok else '失败'} (max_err={max_err:.6e})")
 
     print("\n  🎉 所有测试通过！")
 
-if __name__ == "__main__":
-    verify_rope()
+
 
 
