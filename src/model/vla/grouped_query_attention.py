@@ -63,7 +63,7 @@ class GroupedQAttention(nn.Module):
         assert attention_mask is not None
         att_weights = att_weights + attention_mask
         # 再来softmax
-        att_weights = nn.functional.softmax(att_weights, dim=-1)
+        att_weights = nn.functional.softmax(att_weights, dim=-1, dtype=torch.float32).to(query.dtype)
         
         # 5.输出output 
         # (B, num_heads, T, head_dim) -> (B, T, num_heads, head_dim) -> (B, T, hidden_size)
@@ -115,7 +115,7 @@ def verify():
     # 构造输入
     x = torch.randn(B, T, D)
     position_ids = torch.arange(T).unsqueeze(0).expand(B, T)
-    mask = torch.triu(torch.ones(T, T), diagonal=1)*(1e-9)
+    mask = torch.triu(torch.ones(T, T), diagonal=1)*(-1e9)
 
     y_orig = orig(x, attention_mask=mask, position_ids=position_ids)[0]
     y_mine = mine(x, attention_mask=mask, position_ids=position_ids)[0]
