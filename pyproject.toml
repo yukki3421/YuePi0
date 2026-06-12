@@ -1,10 +1,6 @@
 [project]
-name = "open-pi-zero"
-version = "0.1.1"
-description = "Re-implementation of Pi0 vision-language-action (VLA) model from Physical Intelligence"
-authors = [
-  {name = "Allen Z. Ren", email = "allenzren1@gmail.com"},
-]
+name = "YuePi0"
+version = "0.1"
 readme = "README.md"
 requires-python = "==3.10.*"
 classifiers = [
@@ -29,6 +25,8 @@ dependencies = [
     "transformers==4.47.1",
     "tqdm",
     "wandb",
+    "pip>=26.1.2",
+    "pytest>=9.0.3",
 ]
 
 [build-system]
@@ -36,6 +34,7 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
+where = ["src"]
 exclude = []
 
 [tool.ruff]

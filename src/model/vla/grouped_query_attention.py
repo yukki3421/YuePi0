@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 import math
-from rope import *
+from .rope import RoPE, apply_rotary_pos_emb
 from typing import Optional, Tuple
 
 '''将(B, H_kv, T, D_h) 扩展成(B, H_Q, T, D_h), 其中H_Q = H_KV x G'''
@@ -20,7 +20,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
         head_dim,
     )
 class GroupedQAttention(nn.Module):
-    def __init__(self, hidden_size, num_heads, num_kv_heads, head_dim, rope_theta):
+    def __init__(self, hidden_size, num_heads, num_kv_heads, head_dim, rope_theta, layer_idx=0):
         super().__init__() 
         assert hidden_size == num_heads * head_dim
         assert num_heads > num_kv_heads
@@ -35,8 +35,9 @@ class GroupedQAttention(nn.Module):
         self.o_proj = nn.Linear(num_heads*head_dim, hidden_size, bias=False)
         
         self.rotary_emb = RoPE(head_dim, theta=rope_theta)
+        self.layer_idx = layer_idx # 第几层attention
 
-    def forward(self, hidden_states, attention_mask, position_ids):
+    def forward(self, hidden_states, attention_mask, position_ids, kv_cache=None):
         # 输入形状：hidden_states （B, T, hidden_size)
         B, T, D = hidden_states.shape
 
@@ -50,6 +51,13 @@ class GroupedQAttention(nn.Module):
         cos, sin = self.rotary_emb(query, position_ids)
         query, key = apply_rotary_pos_emb(query, key, cos, sin)
 
+        # KV Cache
+        if kv_cache is not None:
+            # 调用实例的 update 方法                                                                           
+            # 传入新的 key/value，更新 cache 内部状态                                                          
+            # 返回完整的 key/value（旧的 + 新的拼接） 
+            key, value = kv_cache.update(key, value, self.layer_idx)
+        
         # 3. K, V扩展: 从num_kv_heads -> num_heads
         # 扩展倍数就是每组的注意力头数
         # key,value: (B, num_kv_heads, T, head_dim)  -> (B, num_heads, T, head_dim)
@@ -74,7 +82,7 @@ class GroupedQAttention(nn.Module):
         return att_output, att_weights
 
 def verify():
-    from src.model.paligemma.gemma import GemmaAttention
+    from model.paligemma.gemma import GemmaAttention
     torch.manual_seed(0)
     B, T, D = 2, 8, 512
     num_heads = 32
