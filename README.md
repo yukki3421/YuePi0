@@ -2,7 +2,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/yukki3421/yuepi0/readme/docs/assets/logos/logo.png">
-    <img alt="vLLM" src="https://raw.githubusercontent.com/yukki3421/yuepi0/readme/docs/assets/logos/logo.png" width=55%>
+    <img alt="yuepi0" src="https://raw.githubusercontent.com/yukki3421/yuepi0/readme/docs/assets/logos/logo.png" width=20%>
   </picture>
 </p>
 
