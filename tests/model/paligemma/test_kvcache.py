@@ -9,9 +9,9 @@ def test_kv_cache():
     num_heads = 32
     num_kv_heads = 8
     head_dim = 16
-    rope_theta = 10000
+    GemmaRoPE_theta = 10000
 
-    gqa = GroupedQAttention(D, num_heads, num_kv_heads, head_dim, rope_theta, 0)
+    gqa = GroupedQAttention(D, num_heads, num_kv_heads, head_dim, GemmaRoPE_theta, 0)
     gqa.eval()
 
     x_full = torch.randn(B, T, D)

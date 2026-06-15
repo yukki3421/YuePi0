@@ -2,7 +2,6 @@ import torch
 from torch import nn
 import math
 from typing import Optional, Tuple
-from model.vla.rope import RoPE, apply_rotary_pos_emb
 
 
 class RoPE(nn.Module):
