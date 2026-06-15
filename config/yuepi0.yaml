@@ -1,0 +1,19 @@
+# 最小化配置, 只包含PaliGemmaEmbedder需要的字段
+vocab_size: 257216
+hidden_size: 2048
+pad_token_id: 0
+image_token_index: 25715
+pretrained_model_path: '/home/cxy/.cache/huggingface/hub/paligemma-3b-pt-224'
+max_seq_len: 276 # image + prompt的最大长度
+
+vision_config:
+  hidden_size: 1152
+  intermediate_size: 4304 # MLP的隐藏层
+  num_hidden_layers: 2 # 先用两层ViTEncoderLayer
+  num_attention_heads: 16
+  num_channels: 3
+  image_size: 224
+  patch_size: 14
+  layer_norm_eps: 1e-6
+  attention_dropout: 0.0
+  projection_dim: 2048

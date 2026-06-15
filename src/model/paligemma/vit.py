@@ -14,6 +14,7 @@ class ViTVisionConfig:
     num_hidden_layers: int = 27 # encoder层数
     layer_norm_eps: float = 1e-6 
     attention_dropout: float = 0.0
+    projection_dim: int = 2048
 
 # 实现Conv2d + position_embedding
 class ViTVisionEmbedding(nn.Module):
@@ -142,12 +143,12 @@ class ViTVisionTransformer(nn.Module):
         self.config = config
         self.embed_dim = config.hidden_size
 
-        self.embedding = ViTVisionEmbedding(config)
+        self.embeddings = ViTVisionEmbedding(config)
         self.encoder = ViTEncoder(config)
         self.post_layernorm = nn.LayerNorm(self.embed_dim, eps=config.layer_norm_eps)
 
     def forward(self, input_images):
-        input_states = self.embedding(input_images) # (B, 3, 224, 224) -> (B, num_patches, embed_dim)
+        input_states = self.embeddings(input_images) # (B, 3, 224, 224) -> (B, num_patches, embed_dim)
         hidden_state = self.encoder(input_states)
         hidden_state = self.post_layernorm(hidden_state)
         return hidden_state
@@ -167,8 +168,8 @@ class ViTVisionModel(nn.Module):
 class ImageProjector(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.linear = nn.Layer(config.hidden_size, config.projection_dim)
-    
+        self.linear = nn.Linear(config.hidden_size, config.projection_dim)
 
     def forward(self, image_feature):
+        # (B, 256, 1152) -> (B, 256, 2048)
         return self.linear(image_feature)

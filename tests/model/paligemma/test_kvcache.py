@@ -1,7 +1,7 @@
 import torch
 import pytest
-from model.vla.grouped_query_attention import GroupedQAttention
-from model.vla.kvcache import KVCache
+from model.vla.gqa import GroupedQAttention
+from model.kvcache import KVCache
 
 def test_kv_cache():
     torch.manual_seed(0)

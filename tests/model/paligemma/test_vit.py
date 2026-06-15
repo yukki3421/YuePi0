@@ -25,7 +25,7 @@ def test_embedding_shape(cfg, fake_image):
     
     emb = ViTVisionEmbedding(cfg)
     out = emb(fake_image)
-    expected_num_patches = (cfg.image_size/cfg.patch_size) ** 2
+    expected_num_patches = (cfg.image_size // cfg.patch_size) ** 2
     assert out.shape == (2, expected_num_patches, cfg.hidden_size)
 
 def test_attention_shape(cfg, fake_image):
@@ -51,6 +51,12 @@ def test_encoder_layer_shape(cfg, fake_image):
     out = layer(x)
     assert out.shape == x.shape
 
+def test_encoder_shape(cfg, fake_image):
+    emb = ViTVisionEmbedding(cfg)                                                                             
+    enc = ViTEncoder(cfg)
+    x = emb(fake_image)                                                                                       
+    assert enc(x).shape == x.shape
+
 def test_vision_transformer_full_config(cfg27, fake_image):
       model = ViTVisionTransformer(cfg27).eval() 
       with torch.no_grad():                                                          
@@ -65,4 +71,11 @@ def test_attention_softmax_rows_sum_to_one(cfg, fake_image):
         _, w = attn(x)   # [B, H, T, T]
     sums = w.sum(dim=-1)  # 每行和                                                 
     assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5) 
+
+def test_projector_shape(cfg):
+    proj = ImageProjector(cfg)
+    x = torch.randn(2, 256, cfg.hidden_size)
+    assert proj(x).shape == (2, 256, 2048)
+
+
 

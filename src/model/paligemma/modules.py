@@ -17,5 +17,3 @@ class GemmaRMSNorm(nn.Module):
         output = output * (1.0 + self.weight.float())
 
         return output.type_as(x)
-
-
