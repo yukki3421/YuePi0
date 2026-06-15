@@ -35,6 +35,33 @@
 
 ### 2. PaliGemma 的"占位符 + 后期替换"技巧
 
+>  PaliGemma 是 Google 开发的一个 VLM（Vision-Language Model）模型，核心特点：                                      
+                                                                                                                 
+  架构：                                                                                                           
+  - 视觉编码器：SigLIP（纯视觉 Transformer）
+  - 语言解码器：Gemma（Google 的 LLM）                                                                             
+  - 连接方式：视觉特征直接拼接为 token 序列，输入 LLM
+                                                                                                                   
+  名字含义：      
+  - Pali = Pathway for Language and Image（语言与图像的路径）
+  - Gemma = Google 的轻量级 LLM 系列名称                     
+                                        
+  主要能力：
+  - 图像描述 / 问答                                                                                                
+  - 目标检测（输出 <loc0042> 这样的坐标 token）
+  - 图像分割（输出 <seg042> 这样的分割 token）                                                                     
+  - 文档理解      
+
+  和你当前代码的关系：
+  VLAProcessor 就是参考 PaliGemma 的数据预处理流程设计的：
+  - <image> token × 256 拼接图像序列
+  - <loc*> / <seg*> 坐标和分割 token
+  - 同样的归一化策略（ImageNet Standard）
+                                                                                                                   
+  PaliGemma 本身是开源的（Apache 2.0），可以在 HuggingFace 下载：google/paligemma-3b-mix
+                                                                                                                   
+  简单说：就是一个 Google 出品的"看图说话"模型，当前代码在复用它的预处理流程。  
+
 > **PaliGemma 是纯 decoder-only 语言模型，不认识图像。**
 
 解决方案：在 prompt 前面塞 N 个 `<image>` 占位符 token，模型 forward 时再把这些位置的 embedding **替换**成 vision encoder 输出的图像 patch embedding。

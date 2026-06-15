@@ -140,7 +140,7 @@ def forward(self, x):
 ### 6.2 对齐参考实现（bit-level）
 
 ```python
-mine = MyRMSNorm(dim)
+mine = GemmaRMSNorm(dim)
 orig = GemmaRMSNorm(dim)
 orig.weight.data.normal_()                  # 灌随机权重
 mine.load_state_dict(orig.state_dict())     # 拷给 mine
