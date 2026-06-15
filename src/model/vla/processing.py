@@ -192,7 +192,7 @@ class VLAPreProcessor:
             0 = 这个位置是 padding，模型要忽略  
         '''
         # TODO 5: 组装返回 dict: {"pixel_values": ..., **inputs}    
-        output = {'pixel_valuess': pixel_image, **inputs}
+        output = {'pixel_values': pixel_image, **inputs}
         return output
         
         
