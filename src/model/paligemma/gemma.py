@@ -2,72 +2,10 @@ import torch
 from torch import nn
 import math
 from typing import Optional, Tuple
+from .modules import GemmaRMSNorm, GemmaRoPE
+from ..utils import apply_rotary_pos_emb, repeat_kv
 
-
-class RoPE(nn.Module):
-    def __init__(self, dim, theta = 10000):
-        super().__init__()
-        self.dim = dim
-        self.theta = theta
-        
-        # 计算出每对维度的 "基础频率"
-        # 形状为(dim/2,)
-        inv_freqs = 1.0 / (theta **(torch.arange(0, dim, 2).float() / dim))
-
-        # 注册为buffer， 因为不是可学习参数.register_buffer() 是 PyTorch 中 nn.Module 的核心方法，
-        # 专门用来给模型注册不需要梯度更新、
-        # 但需要和模型一起保存 / 加载、且能在 GPU/CPU 之间自动迁移的张量。
-        self.register_buffer("inv_freqs", inv_freqs, persistent=False)
-
-        
-    def forward(self, x, position_ids):
-        # 输入x : (B, H, T, D)
-        # 输入position_ids: (B, T)
-        input_dtype = x.dtype
-        B = position_ids.shape[0]
-        inv_freqs_expanded = self.inv_freqs[None, :, None].expand(B, -1, 1) # 从(dim/2) 拓展到[B, dim/2, 1]维
-        position_ids_expanded = position_ids[:, None, :] # 变成(B, 1, T)的维度
-        # 相乘得到(B, dim/2, T的维度), 再交换1, 2两个维度, 变成 ( B, T, dim/2)
-        angers = (inv_freqs_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
-        angers = torch.cat((angers, angers), dim=-1)
-        cos = angers.cos() 
-        sin = angers.sin()
-        return cos, sin
-
-def rotate_half(x):
-    dim = x.shape[-1]
-    x_2 = x[...,  dim//2:] # python的省略号切片, 就是前面所有维度全取
-    x_1 = x[..., :dim//2]
-    return torch.cat((-x_2, x_1), dim=-1)
-
-# 输出旋转后的q, k
-# 输入q, k 的形状: (B， H, T, D)
-# cos，sin的形状：（B, T， D)
-def apply_rotary_pos_emb(q, k, cos, sin):
-    # 增加一个H维度
-    cos, sin = cos.unsqueeze(1), sin.unsqueeze(1)
-    # 旋转公式
-    q_rot = q*cos + rotate_half(q)*sin
-    k_rot = k*cos + rotate_half(k)*sin
-    return q_rot, k_rot
-
-
-'''将(B, H_kv, T, D_h) 扩展成(B, H_Q, T, D_h), 其中H_Q = H_KV x G'''
-def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    # expand只能扩展大小为1的维度，对于其他维度大小保持不变
-    hidden_states = hidden_states[:, :, None, :, :].expand(
-        batch, num_key_value_heads, n_rep, slen, head_dim
-    )
-    return hidden_states.reshape(
-        batch,
-        num_key_value_heads * n_rep,
-        slen,
-        head_dim,
-    )
-class GroupedQAttention(nn.Module):
+class GemmaAttention(nn.Module):
     def __init__(self, hidden_size, num_heads, num_kv_heads, head_dim, rope_theta, layer_idx=0):
         super().__init__() 
         assert hidden_size == num_heads * head_dim
@@ -82,7 +20,7 @@ class GroupedQAttention(nn.Module):
         self.v_proj = nn.Linear(hidden_size, num_kv_heads*head_dim, bias=False)
         self.o_proj = nn.Linear(num_heads*head_dim, hidden_size, bias=False)
         
-        self.rotary_emb = RoPE(head_dim, theta=rope_theta)
+        self.rotary_emb = GemmaRoPE(head_dim, theta=rope_theta)
         self.layer_idx = layer_idx # 第几层attention
 
     def forward(self, hidden_states, attention_mask, position_ids, kv_cache=None):
@@ -129,56 +67,91 @@ class GroupedQAttention(nn.Module):
         att_output = self.o_proj(output)
         return att_output, att_weights
 
-def verify():
-    from model.paligemma.gemma import GemmaAttention
-    torch.manual_seed(0)
-    B, T, D = 2, 8, 512
-    num_heads = 32
-    num_kv_heads = 8
-    head_dim = 16
-    rope_theta = 10000.0
+class GemmaMLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
 
-    class FakeConfig:
-        pass
-    FakeConfig.hidden_size = D
-    FakeConfig.num_attention_heads = num_heads
-    FakeConfig.num_key_value_heads = num_kv_heads
-    FakeConfig.head_dim = head_dim
-    FakeConfig.rope_theta = rope_theta
-    FakeConfig.attention_dropout = 0.0                                                                                 
-    FakeConfig.attention_bias = False
-    FakeConfig.rms_norm_eps = 1e-6 
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
 
-    orig = GemmaAttention(FakeConfig(), layer_idx=0)
-    mine = GroupedQAttention(D, num_heads, num_kv_heads, head_dim, rope_theta)
+    def forward(self, x):
+        x1 = nn.functional.gelu(self.gate_proj(x), approximate="tanh")
+        x2 = self.up_proj(x)
+        return self.down_proj(x1 * x2)
+
+class GemmaDecoderLayer(nn.Module):
+    def __init__(self, config, layer_idx:int):
+        super().__init__()
+        self.config = config
+
+        self.hidden_size = config.hidden_size
+        self.num_heads = config.num_heads
+        self.head_dim = config.head_dim
+        self.num_kv_heads = config.num_kv_heads
+        self.num_kv_groups = self.num_heads // self.num_kv_heads
+        self.rope_theta = config.rope_theta
+
+        self.self_attn = GemmaAttention(self.hidden_size, self.num_heads, self.num_kv_heads, self.head_dim, self.rope_theta, layer_idx)
+        self.mlp = GemmaMLP(config)
+        self.input_layernorm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
+        self.post_attention_layaernorm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
     
-    # 拷贝原版的权重
-    orig_sd = orig.state_dict()
-    mine_sd = mine.state_dict()
-    print("=== key 对比 ===")
-    print(f"orig keys:  {list(orig_sd.keys())}")
-    print(f"mine keys:  {list(mine_sd.keys())}")
-
-    print("\n=== 检查哪些 key 对不上 ===")
-    for k in orig_sd:
-        if k not in mine_sd:
-            print(f"  ❌ mine 缺少: {k}")
-        elif orig_sd[k].shape != mine_sd[k].shape:
-            print(f"  ⚠️   shape 不等: {k}  orig={orig_sd[k].shape} mine={mine_sd[k].shape}")
-
-    mine.load_state_dict(orig.state_dict(), strict=False)
-
-    # 构造输入
-    x = torch.randn(B, T, D)
-    position_ids = torch.arange(T).unsqueeze(0).expand(B, T)
-    mask = torch.triu(torch.ones(T, T), diagonal=1)*(-1e9)
-
-    y_orig = orig(x, attention_mask=mask, position_ids=position_ids)[0]
-    y_mine = mine(x, attention_mask=mask, position_ids=position_ids)[0]
+    def forward(self, hidden_state, attention_mask, position_ids, kvcache=None):
+        residual = hidden_state
+        hidden_state = self.input_layernorm(hidden_state)
+        # Attention需要的参数：hidden_states, attention_mask, position_ids, kv_cache=None
+        hidden_state, _ = self.self_attn(hidden_state, attention_mask, position_ids, kvcache)
+        hidden_state = residual + hidden_state # 残差连接
+        
+        residual = hidden_state
+        hidden_state = self.post_attention_layaernorm(hidden_state)
+        hidden_state = self.mlp(hidden_state) + residual
     
-    ok = torch.allclose(y_mine, y_orig, atol=1e-5)
-    diff = (y_mine - y_orig).abs().max().item()
-    print(f"allclose={ok} max_diff={diff:.2e}")
-    assert ok, "未对齐!"
-if __name__ == "__main__":
-    verify()
+        return hidden_state
+
+class GemmaModel(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.hidden_size = config.hidden_size
+        self.padding_idx = config.pad_token_id
+        self.vocab_size = config.vocab_size
+        self.num_hidden_layers = config.num_hidden_layers
+        self.embed_tokens = nn.Embedding(
+            config.vocab_size, 
+            config.hidden_size,
+            self.padding_idx
+        )
+
+        self.layers = nn.ModuleList([
+            GemmaDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)
+        ])
+        self.norm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
+
+    def forward(self, attention_mask, position_ids, inputs_embedding, kvcache=None):
+        # [B, T, hidden_size]
+        hidden_state = inputs_embedding
+        normalizer = torch.tensor(self.hidden_size ** 0.5, dtype=hidden_state.dtype)
+        hidden_state = hidden_state * normalizer
+
+        for layer in self.layers:
+            # [B, T, hidden_size]
+            hidden_state = layer(hidden_state, attention_mask, position_ids, kvcache=kvcache)
+        hidden_state = self.norm(hidden_state)
+        return hidden_state
+
+# GemmaForCausalLM —— 包在 GemmaModel 外面，加一个 lm_head 输出 logits
+class GemmaForCausalLM(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.model  = GemmaModel(config)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+    
+    def forward(self, attention_mask, position_ids, inputs_embedding, kvcache=None):
+        hidden_state = self.model(attention_mask, position_ids, inputs_embedding, kvcache)
+        logits = self.lm_head(hidden_state)
+        return {"logits": logits}
+

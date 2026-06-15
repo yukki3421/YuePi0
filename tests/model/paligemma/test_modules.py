@@ -1,5 +1,5 @@
 import torch
-from model.paligemma.modules import GemmaRMSNorm
+from model.paligemma.modules import GemmaRMSNorm,GemmaRoPE
 from model.utils import apply_rotary_pos_emb
 
 def test_gemma_rmsnorm():
@@ -39,7 +39,7 @@ def test_GemmaRoPE():
 
     print("\n[GemmaRoPE 数学性质测试]")
     dim = 64
-    GemmaRoPE = GemmaRoPE(dim=dim)
+    rope = GemmaRoPE(dim=dim)
     B, H, T = 2, 4, 16
 
     # 造输入
@@ -48,7 +48,7 @@ def test_GemmaRoPE():
     position_ids = torch.arange(T).unsqueeze(0).expand(B, T)
 
     # 1. cos/sin 形状
-    cos, sin = GemmaRoPE(q, position_ids)
+    cos, sin = rope(q, position_ids)
     assert cos.shape == (B, T, dim), f"cos shape {cos.shape}"
     assert sin.shape == (B, T, dim), f"sin shape {sin.shape}"
     print(f"  ✅ cos/sin 形状: {cos.shape}")
@@ -66,7 +66,7 @@ def test_GemmaRoPE():
     # 4. 相对位置不变性（核心）
     same = torch.randn(1, 1, 1, dim)
     q_same = same.expand(B, H, T, dim)
-    cos, sin = GemmaRoPE(q_same, position_ids)
+    cos, sin = rope(q_same, position_ids)
     q_rot, k_rot = apply_rotary_pos_emb(q_same, q_same, cos, sin)
 
     b,h = 0, 0
@@ -87,7 +87,7 @@ def test_GemmaRoPE():
     
     # 5. 旋转不改变向量长度（用同一个 q 比较）
     q_for_len = torch.randn(B, H, T, dim)
-    cos_for_len, sin_for_len = GemmaRoPE(q_for_len, position_ids)
+    cos_for_len, sin_for_len = rope(q_for_len, position_ids)
     q_rot_for_len, _ = apply_rotary_pos_emb(q_for_len, q_for_len, cos_for_len, sin_for_len)
 
     norm_before = q_for_len.pow(2).sum(-1).sqrt()

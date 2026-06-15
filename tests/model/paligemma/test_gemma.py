@@ -1,75 +1,53 @@
 import torch
-from model.paligemma.gemma import GemmaRoPE
+import pytest
+from model.paligemma.gemma import GemmaForCausalLM
 
-def test_GemmaRoPE():
-    # B, H, T, dim = 2, 4, 16, 64
-    # GemmaRoPE = GemmaRoPE(dim = dim)
-    # q = torch.randn(B, H, T, dim)
-    # k = torch.randn(B, H, T, dim)
-    # position_ids = torch.arange(T).unsqueeze(0).expand(B, T)
+class FakeConfig:
+    hidden_size = 2048
+    num_hidden_layers = 5
+    vocab_size = 257216
+    intermediate_size = 4034
+    num_heads = 16
+    head_dim = 128
+    num_kv_heads = 4
+    rope_theta = 1000
+    rms_norm_eps = 1e-6
+    pad_token_id = 0
 
-    # cos, sin = GemmaRoPE(q, position_ids)
-    # q_rot, k_rot = apply_rotary_pos_emb(q, k, cos, sin)
+'''
+@pytest.fixture 是 pytest 的依赖注入机制。
+标了 @pytest.fixture 的函数，会自动提前运行，产出数据 / 对象
+'''
+@pytest.fixture
+def model():
+    return GemmaForCausalLM(FakeConfig())
 
-    # assert True
-
-    print("\n[GemmaRoPE 数学性质测试]")
-    dim = 64
-    GemmaRoPE = GemmaRoPE(dim=dim)
-    B, H, T = 2, 4, 16
-
-    # 造输入
-    q = torch.randn(B, H, T, dim)
-    k = torch.randn(B, H, T, dim)
+@pytest.fixture
+def inputs(model):
+    B, T = 2, 16
+    x = torch.randint(0, 257216, (B, T))
+    attention_mask = torch.triu(torch.ones(T, T), diagonal=1)*(-1e9)
     position_ids = torch.arange(T).unsqueeze(0).expand(B, T)
+    inputs_embedding = model.model.embed_tokens(x)
+    return {
+        "attention_mask": attention_mask,
+        "position_ids": position_ids,
+        "inputs_embedding": inputs_embedding
+    }
 
-    # 1. cos/sin 形状
-    cos, sin = GemmaRoPE(q, position_ids)
-    assert cos.shape == (B, T, dim), f"cos shape {cos.shape}"
-    assert sin.shape == (B, T, dim), f"sin shape {sin.shape}"
-    print(f"  ✅ cos/sin 形状: {cos.shape}")
+def test_logits_shape(model, inputs):
+    out = model(**inputs)
+    assert out['logits'].shape == (2, 16, 257216)
 
-    # 2. dtype 保持
-    assert cos.dtype == q.dtype
-    print(f"  ✅ dtype 保持: {q.dtype}")
+def test_isfinite(model, inputs):
+    out = model(**inputs)
+    assert torch.isfinite(out["logits"]).all()
 
-    # 3. 旋转后形状不变
-    q_rot, k_rot = apply_rotary_pos_emb(q, k, cos, sin)
-    assert q_rot.shape == q.shape
-    assert k_rot.shape == k.shape
-    print(f"  ✅ 旋转后形状不变")
+def test_gradient_flow(model, inputs):                                                       
+    out = model(**inputs)                                 
+    loss = out["logits"].sum()
+    loss.backward()
 
-    # 4. 相对位置不变性（核心）
-    same = torch.randn(1, 1, 1, dim)
-    q_same = same.expand(B, H, T, dim)
-    cos, sin = GemmaRoPE(q_same, position_ids)
-    q_rot, k_rot = apply_rotary_pos_emb(q_same, q_same, cos, sin)
-
-    b,h = 0, 0
-    ok = True
-    for i in range(T):
-        for j in range(i, T):
-            # 位置i, j的点积
-            dot_ij = torch.dot(q_rot[b, h, i], k_rot[b, h, j])
-            # 位置0, j-i的点积
-            dot_0_delta = torch.dot(q_rot[b, h, 0], k_rot[b, h, j - i])
-            if not torch.allclose(dot_ij, dot_0_delta, atol=1e-4):
-                  ok = False                                                                                                                        
-                  print(f"  ❌ 位置 ({i}, {j}) 失败: {dot_ij.item():.6f} vs {dot_0_delta.item():.6f}")
-                  break                                                                                                                             
-        if not ok:
-            break
-    print(f"  ✅ 相对位置不变性: {'通过' if ok else '失败'}")
-    
-    # 5. 旋转不改变向量长度（用同一个 q 比较）
-    q_for_len = torch.randn(B, H, T, dim)
-    cos_for_len, sin_for_len = GemmaRoPE(q_for_len, position_ids)
-    q_rot_for_len, _ = apply_rotary_pos_emb(q_for_len, q_for_len, cos_for_len, sin_for_len)
-
-    norm_before = q_for_len.pow(2).sum(-1).sqrt()
-    norm_after = q_rot_for_len.pow(2).sum(-1).sqrt()
-    norm_ok = torch.allclose(norm_before, norm_after, atol=1e-4)
-    max_err = (norm_before - norm_after).abs().max().item()
-    print(f"  ✅ 旋转不改变向量长度: {'通过' if norm_ok else '失败'} (max_err={max_err:.6e})")
-
-    print("\n  🎉 所有测试通过！")
+    # 验证至少有一些参数有梯度
+    has_grad = [p.grad is not None for p in model.parameters() if p.requires_grad]
+    assert any(has_grad), "No parameter has gradient"
