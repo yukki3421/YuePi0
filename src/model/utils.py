@@ -16,3 +16,19 @@ def apply_rotary_pos_emb(q, k, cos, sin):
     q_rot = q*cos + rotate_half(q)*sin
     k_rot = k*cos + rotate_half(k)*sin
     return q_rot, k_rot
+
+'''将(B, H_kv, T, D_h) 扩展成(B, H_Q, T, D_h), 其中H_Q = H_KV x G'''
+def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    # expand只能扩展大小为1的维度，对于其他维度大小保持不变
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_key_value_heads, n_rep, slen, head_dim
+    )
+    return hidden_states.reshape(
+        batch,
+        num_key_value_heads * n_rep,
+        slen,
+        head_dim,
+    )
