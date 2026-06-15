@@ -16,4 +16,4 @@ This repository provides a re‑implementation of the pi0 model from the Physica
  - [x] RoPE + RMSNorm
  - [x] GQA + KV Cache
  - [x] ViT
-
+ - [x] Gemma
