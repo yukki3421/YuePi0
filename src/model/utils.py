@@ -9,14 +9,12 @@ def rotate_half(x):
 # 输出旋转后的q, k
 # 输入q, k 的形状: (B， H, T, D)
 # cos，sin的形状：（B, T， D)
-def apply_rotary_pos_emb(q, k, cos, sin):
+def apply_rotary_pos_emb(x, cos, sin):
     # 增加一个H维度
     cos, sin = cos.unsqueeze(1), sin.unsqueeze(1)
     # 旋转公式
-    q_rot = q*cos + rotate_half(q)*sin
-    k_rot = k*cos + rotate_half(k)*sin
-    return q_rot, k_rot
-
+    x_rot = x*cos + rotate_half(x)*sin
+    return x_rot
 '''将(B, H_kv, T, D_h) 扩展成(B, H_Q, T, D_h), 其中H_Q = H_KV x G'''
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, slen, head_dim = hidden_states.shape

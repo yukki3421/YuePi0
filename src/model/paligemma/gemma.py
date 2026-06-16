@@ -35,7 +35,7 @@ class GemmaAttention(nn.Module):
 
         # 2. RoPE旋转（cos, sin形状为(B, T, head_dim)
         cos, sin = self.rotary_emb(query, position_ids)
-        query, key = apply_rotary_pos_emb(query, key, cos, sin)
+        query, key = apply_rotary_pos_emb(query, cos, sin), apply_rotary_pos_emb(key, cos, sin)
 
         # KV Cache
         if kv_cache is not None:
