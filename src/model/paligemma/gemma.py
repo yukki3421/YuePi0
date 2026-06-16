@@ -98,7 +98,7 @@ class GemmaDecoderLayer(nn.Module):
         self.self_attn = GemmaAttention(self.hidden_size, self.num_heads, self.num_kv_heads, self.head_dim, self.rope_theta, layer_idx)
         self.mlp = GemmaMLP(config)
         self.input_layernorm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
-        self.post_attention_layaernorm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
+        self.post_attention_layernorm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
     
     def forward(self, hidden_state, attention_mask, position_ids, kvcache=None):
         residual = hidden_state
@@ -108,7 +108,7 @@ class GemmaDecoderLayer(nn.Module):
         hidden_state = residual + hidden_state # 残差连接
         
         residual = hidden_state
-        hidden_state = self.post_attention_layaernorm(hidden_state)
+        hidden_state = self.post_attention_layernorm(hidden_state)
         hidden_state = self.mlp(hidden_state) + residual
     
         return hidden_state
