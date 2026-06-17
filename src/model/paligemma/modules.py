@@ -36,10 +36,10 @@ class GemmaRoPE(nn.Module):
         self.register_buffer("inv_freqs", inv_freqs, persistent=False)
 
         
-    def forward(self, x, position_ids):
-        # 输入x : (B, H, T, D)
+    def forward(self, qk, position_ids):
+        # 输入qk : (B, H, T, D), 输入必须是Q 和 K
         # 输入position_ids: (B, T)
-        input_dtype = x.dtype
+        input_dtype = qk.dtype
         B = position_ids.shape[0]
         inv_freqs_expanded = self.inv_freqs[None, :, None].expand(B, -1, 1) # 从(dim/2) 拓展到[B, dim/2, 1]维
         position_ids_expanded = position_ids[:, None, :] # 变成(B, 1, T)的维度

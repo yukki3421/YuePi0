@@ -15,5 +15,6 @@ This repository provides a re‑implementation of the pi0 model from the Physica
  - [x] VLAPreProcessor
  - [x] RoPE + RMSNorm
  - [x] GQA + KV Cache
- - [x] ViT
+ - [x] ViT/SigLip
  - [x] Gemma
+ - [x] Mixture + JointModel
