@@ -1,7 +1,6 @@
 import torch
 import pytest
-from model.vla.modules import build_blockwise_causal_mask
-
+from model.vla.modules import build_blockwise_causal_mask, TimeEncoder, ActionEncoder, AdaptiveRMSNorm
 
 # ========== 用例 1: 形状 + 区块值 ==========
 def test_build_blockwise_causal_mask():
@@ -110,3 +109,79 @@ def test_dtype_support(dtype):
     assert mat[0, 0] == 0
     # -inf 的位置
     assert mat[0, 3] == NEG
+
+
+# --------------------------------测试time_encoder-------------------------
+def test_shape():
+    enc = TimeEncoder(dim=64)
+    t = torch.rand(4)  
+# (B,)
+
+    out = enc(t)
+    assert out.shape == (4, 64)
+
+def test_finite():
+    enc = TimeEncoder(dim=64)
+    t = torch.rand(4)
+    out = enc(t)
+    assert torch.isfinite(out).all()
+
+def test_different_t_gives_different_emb():
+    """不同的 t 应该产生不同的 embedding"""
+    enc = TimeEncoder(dim=64)
+    t = torch.tensor([0.1, 0.5, 0.9])
+    out = enc(t)
+    
+# 任意两个 sample 不应该完全相同
+
+    assert not torch.allclose(out[0], out[1])
+    assert not torch.allclose(out[1], out[2])
+
+def test_same_t_gives_same_emb():
+    """相同的 t 应该产生完全一样的 embedding（确定性）"""
+    enc = TimeEncoder(dim=64)
+    t = torch.tensor([0.5, 0.5])
+    out = enc(t)
+    assert torch.allclose(out[0], out[1])
+
+def test_value_range():
+    """因为是 sin/cos，所有值应该在 [-1, 1]"""
+    enc = TimeEncoder(dim=64)
+    t = torch.linspace(0, 1, 100)
+    out = enc(t)
+    assert (out >= -1).all() and (out <= 1).all()
+
+def test_no_learnable_params():
+    """TimeEncoder 应该是无参数的纯函数"""
+    enc = TimeEncoder(dim=64)
+    assert sum(p.numel() for p in enc.parameters()) == 0
+
+
+# -----------------------------测试Action Encoder---------------------------
+def test_action_encoder_shape():                          
+    """(B, H, action_dim) → (B, H, hidden_size)"""                                   
+    enc = ActionEncoder(action_dim=7, hidden_size=1024)   
+    actions = torch.randn(2, 4, 7)  # B=2, horizon=4, action_dim=7                   
+    out = enc(actions)                                                               
+    assert out.shape == (2, 4, 1024)                                                 
+    assert torch.isfinite(out).all()
+
+# -----------------------------测试AdaptiveRMSNorm---------------------------
+def test_adaptive_rmsnorm_shape():
+    norm = AdaptiveRMSNorm(hidden_size=64, time_dim=128)
+    x = torch.randn(2, 8, 64)
+    t_emb = torch.randn(2, 128)
+    out = norm(x, t_emb)
+    assert out.shape == (2, 8, 64)
+
+def test_zero_init_behaves_like_rmsnorm():
+    """初始化时（scale=0, shift=0），输出应该等于纯 RMSNorm 的结果"""
+    norm = AdaptiveRMSNorm(hidden_size=64, time_dim=128)
+    x = torch.randn(2, 8, 64)
+    t_emb = torch.randn(2, 128)
+    out = norm(x, t_emb)
+    # 手动算 RMSNorm
+    rms = x.pow(2).mean(-1, keepdim=True).sqrt()
+    x_normed = x / (rms + 1e-6)
+
+    assert torch.allclose(out, x_normed, atol=1e-5)
