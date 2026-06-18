@@ -67,10 +67,10 @@ def test_decoder_layer_allclose():
     # 4. 两边 forward
     with torch.no_grad():
         y_orig = orig(
-            hidden_states=x,
+            hidden_state=x,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            kv_cache=None,
+            kvcache=None,
         )
         # 原版 forward 返回的是 hidden_states 单值（看 line 196）
         if isinstance(y_orig, tuple):

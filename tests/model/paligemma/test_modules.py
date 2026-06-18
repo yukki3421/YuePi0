@@ -58,7 +58,8 @@ def test_GemmaRoPE():
     print(f"  ✅ dtype 保持: {q.dtype}")
 
     # 3. 旋转后形状不变
-    q_rot, k_rot = apply_rotary_pos_emb(q, k, cos, sin)
+    q_rot = apply_rotary_pos_emb(q, cos, sin)
+    k_rot = apply_rotary_pos_emb(k, cos, sin)
     assert q_rot.shape == q.shape
     assert k_rot.shape == k.shape
     print(f"  ✅ 旋转后形状不变")
@@ -67,8 +68,8 @@ def test_GemmaRoPE():
     same = torch.randn(1, 1, 1, dim)
     q_same = same.expand(B, H, T, dim)
     cos, sin = rope(q_same, position_ids)
-    q_rot, k_rot = apply_rotary_pos_emb(q_same, q_same, cos, sin)
-
+    q_rot = apply_rotary_pos_emb(q_same, cos, sin)
+    k_rot = apply_rotary_pos_emb(q_same, cos, sin)
     b,h = 0, 0
     ok = True
     for i in range(T):
@@ -88,7 +89,7 @@ def test_GemmaRoPE():
     # 5. 旋转不改变向量长度（用同一个 q 比较）
     q_for_len = torch.randn(B, H, T, dim)
     cos_for_len, sin_for_len = rope(q_for_len, position_ids)
-    q_rot_for_len, _ = apply_rotary_pos_emb(q_for_len, q_for_len, cos_for_len, sin_for_len)
+    q_rot_for_len = apply_rotary_pos_emb( q_for_len, cos_for_len, sin_for_len)
 
     norm_before = q_for_len.pow(2).sum(-1).sqrt()
     norm_after = q_rot_for_len.pow(2).sum(-1).sqrt()
