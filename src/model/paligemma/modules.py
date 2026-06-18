@@ -4,11 +4,11 @@ import torch
 class GemmaRMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
-        self.epsilon = eps
+        self.eps = eps
         self.weight = nn.Parameter(torch.zeros(dim)) # 创建全0张量, 包装成可学习参数
 
     def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True)+self.epsilon)
+        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True)+self.eps)
     
     def forward(self, x):
         # 输入x 形状(B, T, D)
