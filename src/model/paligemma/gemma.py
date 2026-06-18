@@ -112,7 +112,7 @@ class GemmaDecoderLayer(nn.Module):
         hidden_state = self.mlp(hidden_state) + residual
     
         return hidden_state
-
+# 主要为了 state_dict key 对齐 PaliGemma。
 class GemmaModel(nn.Module):
     def __init__(self, config):
         super().__init__()

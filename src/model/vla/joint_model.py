@@ -37,7 +37,7 @@ class JointModel(nn.Module):
 
         # 2. layer
         for layer_idx in range(self.num_hidden_layers):
-            embeds_all = forward_mixture_layers(
+            hidden_states = forward_mixture_layers(
                 self.mixtures,
                 attention_mask,
                 position_ids_all,
