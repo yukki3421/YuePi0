@@ -165,3 +165,4 @@ def test_joint_model_forward_with_different_hidden_sizes():
 
     for name in ["vlm", "proprio", "action"]:
         assert torch.isfinite(out[name]).all(), f"{name} has NaN/Inf"
+
