@@ -1,6 +1,6 @@
 import torch
 import pytest
-from model.vla.modules import build_blockwise_causal_mask, TimeEncoder, ActionEncoder, AdaptiveRMSNorm
+from model.vla.modules import build_blockwise_causal_mask, TimeEncoder, ActionEncoder, AdaptiveRMSNorm, ProprioEncoder, ActionDecoder
 
 # ========== 用例 1: 形状 + 区块值 ==========
 def test_build_blockwise_causal_mask():
@@ -185,3 +185,50 @@ def test_zero_init_behaves_like_rmsnorm():
     x_normed = x / (rms + 1e-6)
 
     assert torch.allclose(out, x_normed, atol=1e-5)
+
+def test_action_encoder_time_cond_off():
+    """time_cond=False 时输出与 time_emb 无关"""
+    enc = ActionEncoder(action_dim=7, hidden_size=64, time_cond=False)
+    action = torch.randn(2, 4, 7)
+    out1 = enc(action)                    # 不传 time_emb
+    out2 = enc(action, time_emb=torch.randn(2, 64))  # 传任意 time_emb
+    assert torch.allclose(out1, out2)
+    assert out1.shape == (2, 4, 64)
+
+def test_action_encoder_time_cond_on_changes_with_t():
+    """time_cond=True 时，同一 action 配不同 t，输出必须不同"""
+    enc = ActionEncoder(action_dim=7, hidden_size=64, time_cond=True)
+    action = torch.randn(2, 4, 7)
+    t1 = torch.zeros(2, 64)
+    t2 = torch.ones(2, 64)
+    out1 = enc(action, t1)
+    out2 = enc(action, t2)
+    assert not torch.allclose(out1, out2)   # ← 这条是 time_cond 存在的意义
+    assert out1.shape == (2, 4, 64)
+
+# -------------------------------------测试ProprioEncoder/ActionDecoder------------------------------
+def test_proprio_encoder_shape():
+    enc = ProprioEncoder(proprio_dim=7, proprio_hidden_size=1024)
+    proprios = torch.randn(2, 1, 7)
+    assert enc(proprios).shape == (2, 1, 1024)
+
+
+def test_action_decoder_shape():
+    dec = ActionDecoder(action_hidden_size=1024, action_dim=7)
+    action_hidden = torch.randn(2, 4, 1024)
+    assert dec(action_hidden).shape == (2, 4, 7)
+
+
+def test_action_decoder_grad():
+    dec = ActionDecoder(action_hidden_size=1024, action_dim=7)
+    x = torch.randn(2, 4, 1024, requires_grad=True)
+    out = dec(x)
+    out.sum().backward()
+    assert x.grad is not None
+
+def test_proprio_encoder_grad():
+    enc = ProprioEncoder(proprio_dim=7, proprio_hidden_size=1024)
+    x = torch.randn(2, 1, 7, requires_grad=True)
+    out = enc(x)
+    out.sum().backward()
+    assert x.grad is not None

@@ -1,7 +1,10 @@
 import torch
 from torch import nn
-from model.paligemma.vit import ViTVisionModel,ImageProjector
+from omegaconf import OmegaConf
 
+from model.paligemma.vit import ViTVisionModel,ImageProjector
+from model.vla.joint_model import JointModel
+from model.vla.modules import TimeEncoder, ActionEncoder, ActionDecoder, ProprioEncoder
 class PaliGemmaEmbedder(nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -11,6 +14,8 @@ class PaliGemmaEmbedder(nn.Module):
         # Pizero的一次Forward里不是只有一段token,
         # 而是分成三段 [ 图像+文本 tokens ][ 机器人状态 tokens ][ 动作 tokens ]
         self.image_text_hidden_size = cfg.hidden_size
+
+        self.num_inference_steps = cfg.num_inference_steps # Flow Matching 推理时去噪的步数。10
 
         #  Gemma 语言模型的词嵌入层
         self.embed_tokens = nn.Embedding(
@@ -78,38 +83,144 @@ class PaliGemmaEmbedder(nn.Module):
         # final_embedding[image_mask] = scaled_image_embeddings 
         return final_embedding
 
+class PiZero(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        OmegaConf.resolve(config) # 把${...}提前换成具体值
+        self.vocab_size = config.vocab_size
 
-if __name__ == "__main__":
-    
-    from transformers import AutoTokenizer
-    from model.vla.processing import VLAPreProcessor
-    from omegaconf import OmegaConf
-    
-    config = OmegaConf.load('config/yuepi0.yaml')
-    model = PaliGemmaEmbedder(config)
-    tokenizer = AutoTokenizer.from_pretrained(
-        config.pretrained_model_path, padding_side="right"
-    )
-    
-    assert tokenizer.padding_side == "right"
+        self.max_image_text_tokens = config.max_image_text_tokens
+        self.num_proprio_tokens = config.cond_steps
+        self.num_action_tokens = config.horizon_steps
+        self.total_num_tokens = self.max_image_text_tokens + self.num_proprio_tokens + self.num_action_tokens
 
-    bsz = 1
-    dummy_images = torch.randint(
-        0, 256, (bsz, 3, 224, 224), dtype=torch.uint8
-    )
-    prompts = ["this images contains ", "this is a nice portrait of "][:bsz]
+        self.action_dim = config.action_dim
 
-    num_image_tokens = 256
-    processor = VLAPreProcessor(tokenizer, 
-                                num_image_token=num_image_tokens, 
-                                max_seq_len=config.max_seq_len)
-    
-    # 生成图片占位token
-    model_inputs = processor(prompts=prompts, images=dummy_images)
-    input_ids = model_inputs['input_ids']
-    pixel_values = model_inputs['pixel_values']
+        self.embedder = PaliGemmaEmbedder(config)
+        self.joint = JointModel(config.joint)
+        self.time_encoder = TimeEncoder(config.action_hidden_size) # action和time必须同维度才能cat
+        self.action_encoder = ActionEncoder(config.action_dim, config.action_hidden_size, True)
+        self.proprio_encoder = ProprioEncoder(config.proprio_dim, config.proprio_hidden_size)
+        self.action_decoder = ActionDecoder(config.action_hidden_size, config.action_dim)
 
-    with torch.no_grad():
-        out = model(input_ids, pixel_values)
-    print("out.shape: ", out.shape)
-    print("nan/inf count:", torch.isfinite(out).sum().item())
+    def forward(self, batch):
+        '''
+        batch:
+            input_ids:    (B, L_text)
+            attention_mask: (B, max_seq_len) 有效token标记
+            pixel_values: (B, 3, 224, 224)
+            proprio:      (B, cond_step, proprio_dim)
+            action:      (B, T_action, action_dim)   ← x_1，真实动作
+        '''
+        input_ids = batch['input_ids']
+        pixel_values = batch['pixel_values']
+        attention_mask = batch['attention_mask']
+        proprio = batch['proprio']
+        action = batch['action']
+
+        # 步骤1： 三段embed
+        vlm_emb = self.embedder(input_ids, pixel_values)
+        proprio_emb = self.proprio_encoder(proprio)
+
+        # 步骤2： FM采样
+        B, T_a, A = action.shape
+        t = torch.rand(B, device=action.device) # 生成均匀分布(0, 1)之间的随机数, 正好是Flow Matching所需要的
+        noise = torch.randn_like(action)
+        t_b = t[:, None, None]
+        x_t = (1 - t_b) * noise + t_b * action # 1024
+
+        # 步骤3：t embeddig + atciont(x_t) embedding
+        time_emb = self.time_encoder(t) # 256
+        action_emb = self.action_encoder(x_t, time_emb)
+
+        # 步骤4：position_ids + block-wise causal mask
+        causal_mask, vlm_position_ids, proprio_position_ids, action_position_ids = \
+            self.build_mask_and_position_ids(attention_mask, action_emb.dtype)
+
+        # 步骤5: joint forward
+        embeds_all = {"vlm": vlm_emb, "proprio": proprio_emb, "action": action_emb}
+        positions_all = {"vlm": vlm_position_ids, "proprio": proprio_position_ids, "action": action_position_ids}
+        out = self.joint(causal_mask, positions_all, embeds_all)
+
+        # 步骤6：action_expert -> 预测速度
+        v_pred = self.action_decoder(out['action'])
+
+        # 步骤7： FM Loss
+        v_target = action - noise # 真实速度场, 先用最简单的x_t = (1-t)*x_0 + t*x_1 
+        loss = torch.mean((v_pred - v_target) ** 2)
+        return loss
+
+    @torch.no_grad
+    def infer_action(self, batch, num_inference_steps: int = 10):
+        '''batch:                                                                                                                                                                                    
+          input_ids:      (B, max_image_text_tokens)   ← VLM 文本+图像占位
+          pixel_values:   (B, 3, 224, 224)             ← 图像                                                                                                                                   
+          attention_mask: (B, max_image_text_tokens)   ← padding mask                                                                                                                           
+          proprio:        (B, cond_steps, proprio_dim) ← 机器人当前状态                                                                                                                         
+      返回:                                                                                                                                                                                     
+          action_pred:    (B, horizon_steps, action_dim)'''
+        input_ids      = batch['input_ids']                                                                                                                                                       
+        pixel_values   = batch['pixel_values']                                                                                                                                                    
+        attention_mask = batch['attention_mask']                                                                                                                                                  
+        proprio        = batch['proprio']
+
+        dtype = pixel_values.dtype
+        device = pixel_values.device
+        B = pixel_values.shape[0]
+        # 步骤1： 准备vlm_emb, mask, position_ids
+        vlm_emb = self.embedder(input_ids, pixel_values)
+        proprio_emb = self.proprio_encoder(proprio)
+        causal_mask, vlm_pos, proprio_pos, action_pos = self.build_mask_and_position_ids(attention_mask, dtype) 
+        position_ids_all = {'vlm': vlm_pos, "proprio": proprio_pos, "action": action_pos}
+        embeds_all = {'vlm': vlm_emb, 'proprio': proprio_emb}
+        # 步骤2：从纯噪声出发
+        x = torch.rand(B, self.num_action_tokens, self.action_dim, device=device, dtype=dtype)
+        # 步骤3：欧拉积分
+        dt = 1.0 / num_inference_steps
+        t = torch.zeros(B, device=device, dtype=dtype)
+        for _ in range(num_inference_steps):
+            # 编码当前x 和 t
+            time_emb = self.time_encoder(t)
+            action_emb = self.action_encoder(x, time_emb)
+            embeds_all['action'] = action_emb
+            # 拿到当前位置的速度场
+            out = self.joint(causal_mask, position_ids_all, embeds_all)
+            v = self.action_decoder(out['action'])
+            # Euler 
+            x = x + dt * v
+            t = t + dt
+        return x
+
+    def build_mask_and_position_ids(self, attention_mask, dtype:torch.dtype):
+        bsz = attention_mask.shape[0]
+        device = attention_mask.device
+        proprio_start = self.max_image_text_tokens 
+        action_start = self.max_image_text_tokens + self.num_proprio_tokens
+        # 每个batch实际有效的image/text token数量
+        valid_image_text_token = torch.sum(attention_mask, dim=-1)
+
+        mask_pre = torch.full(
+            (bsz, self.total_num_tokens, self.total_num_tokens), torch.finfo(dtype).min, 
+            dtype=dtype, device=device)
+        for idx, cnt in enumerate(valid_image_text_token):
+            # 有效image/text token内部相互可见
+            mask_pre[idx, :cnt, :cnt] = 0
+            # proprio/action 可以看到image/text 分两步写，跳过image/text到proprio中间填充的padding
+            mask_pre[idx, proprio_start:, :cnt] = 0
+
+        # proprio内部相互可见
+        mask_pre[:, proprio_start:action_start, proprio_start:action_start ] = 0
+        # action可以看proprio
+        mask_pre[:, action_start:, proprio_start:] = 0
+        # 加head 维, [B, T_total, T_total] -> [B, 1, T_total, T_total]
+        causal_mask = mask_pre.unsqueeze(1) 
+
+        # 位置编码id: 每段都从1开始, 方便和RoPE配合
+        vlm_position_ids = torch.arange(1, self.max_image_text_tokens+1, device=device).expand(bsz, -1)
+        proprio_position_ids = torch.arange(1, self.num_proprio_tokens+1, device=device).expand(bsz, -1)
+        # action_postion_ids = torch.arange(1, self.num_action_tokens).expand(bsz, -1)
+         # action_position_ids 接在 proprio 后面继续编号：例如 proprio=1 step 时 action=[2,3,4,5]
+        # 因为 proprio 和 action 共享 mixture 权重，用连续编号更合理
+        action_position_ids = torch.arange(self.num_proprio_tokens+1, self.num_proprio_tokens+self.num_action_tokens+1,
+                                           device=device ).expand(bsz, -1)
+        return causal_mask, vlm_position_ids, proprio_position_ids, action_position_ids
