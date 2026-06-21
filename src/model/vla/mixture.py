@@ -4,6 +4,7 @@ from torch import nn
 from model.paligemma.gemma import GemmaMLP
 from model.paligemma.modules import GemmaRoPE, GemmaRMSNorm
 from model.utils import repeat_kv, apply_rotary_pos_emb
+from model.vla.modules import AdaptiveRMSNorm
 
 class MixtureAttention(nn.Module):
     def __init__(self, config):
@@ -68,9 +69,14 @@ class MixtureDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.self_attn = MixtureAttention(config)
         self.mlp = GemmaMLP(config)
-        # 暂时用GammaRMSNorm代替
-        self.input_layernorm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
-        self.post_attention_layernorm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
+        # adaptive_mode决定用哪一种norm
+        self.adaptive_mode = getattr(config, "adaptive_mode", None)
+        if self.adaptive_mode:
+            self.input_layernorm = AdaptiveRMSNorm(self.hidden_size, config.time_hidden_size, config.rms_norm_eps)
+            self.post_attention_layernorm = AdaptiveRMSNorm(self.hidden_size, config.time_hidden_size, config.rms_norm_eps)
+        else:
+            self.input_layernorm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
+            self.post_attention_layernorm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
 
     def forward_norm(
         self,

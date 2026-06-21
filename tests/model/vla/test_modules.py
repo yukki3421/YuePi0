@@ -1,7 +1,6 @@
 import torch
 import pytest
-from model.vla.modules import build_blockwise_causal_mask
-
+from model.vla.modules import build_blockwise_causal_mask, TimeEncoder, ActionEncoder, AdaptiveRMSNorm, ProprioEncoder, ActionDecoder
 
 # ========== 用例 1: 形状 + 区块值 ==========
 def test_build_blockwise_causal_mask():
@@ -110,3 +109,126 @@ def test_dtype_support(dtype):
     assert mat[0, 0] == 0
     # -inf 的位置
     assert mat[0, 3] == NEG
+
+
+# --------------------------------测试time_encoder-------------------------
+def test_shape():
+    enc = TimeEncoder(dim=64)
+    t = torch.rand(4)  
+# (B,)
+
+    out = enc(t)
+    assert out.shape == (4, 64)
+
+def test_finite():
+    enc = TimeEncoder(dim=64)
+    t = torch.rand(4)
+    out = enc(t)
+    assert torch.isfinite(out).all()
+
+def test_different_t_gives_different_emb():
+    """不同的 t 应该产生不同的 embedding"""
+    enc = TimeEncoder(dim=64)
+    t = torch.tensor([0.1, 0.5, 0.9])
+    out = enc(t)
+    
+# 任意两个 sample 不应该完全相同
+
+    assert not torch.allclose(out[0], out[1])
+    assert not torch.allclose(out[1], out[2])
+
+def test_same_t_gives_same_emb():
+    """相同的 t 应该产生完全一样的 embedding（确定性）"""
+    enc = TimeEncoder(dim=64)
+    t = torch.tensor([0.5, 0.5])
+    out = enc(t)
+    assert torch.allclose(out[0], out[1])
+
+def test_value_range():
+    """因为是 sin/cos，所有值应该在 [-1, 1]"""
+    enc = TimeEncoder(dim=64)
+    t = torch.linspace(0, 1, 100)
+    out = enc(t)
+    assert (out >= -1).all() and (out <= 1).all()
+
+def test_no_learnable_params():
+    """TimeEncoder 应该是无参数的纯函数"""
+    enc = TimeEncoder(dim=64)
+    assert sum(p.numel() for p in enc.parameters()) == 0
+
+
+# -----------------------------测试Action Encoder---------------------------
+def test_action_encoder_shape():                          
+    """(B, H, action_dim) → (B, H, hidden_size)"""                                   
+    enc = ActionEncoder(action_dim=7, hidden_size=1024)   
+    actions = torch.randn(2, 4, 7)  # B=2, horizon=4, action_dim=7                   
+    out = enc(actions)                                                               
+    assert out.shape == (2, 4, 1024)                                                 
+    assert torch.isfinite(out).all()
+
+# -----------------------------测试AdaptiveRMSNorm---------------------------
+def test_adaptive_rmsnorm_shape():
+    norm = AdaptiveRMSNorm(hidden_size=64, time_dim=128)
+    x = torch.randn(2, 8, 64)
+    t_emb = torch.randn(2, 128)
+    out = norm(x, t_emb)
+    assert out.shape == (2, 8, 64)
+
+def test_zero_init_behaves_like_rmsnorm():
+    """初始化时（scale=0, shift=0），输出应该等于纯 RMSNorm 的结果"""
+    norm = AdaptiveRMSNorm(hidden_size=64, time_dim=128)
+    x = torch.randn(2, 8, 64)
+    t_emb = torch.randn(2, 128)
+    out = norm(x, t_emb)
+    # 手动算 RMSNorm
+    rms = x.pow(2).mean(-1, keepdim=True).sqrt()
+    x_normed = x / (rms + 1e-6)
+
+    assert torch.allclose(out, x_normed, atol=1e-5)
+
+def test_action_encoder_time_cond_off():
+    """time_cond=False 时输出与 time_emb 无关"""
+    enc = ActionEncoder(action_dim=7, hidden_size=64, time_cond=False)
+    action = torch.randn(2, 4, 7)
+    out1 = enc(action)                    # 不传 time_emb
+    out2 = enc(action, time_emb=torch.randn(2, 64))  # 传任意 time_emb
+    assert torch.allclose(out1, out2)
+    assert out1.shape == (2, 4, 64)
+
+def test_action_encoder_time_cond_on_changes_with_t():
+    """time_cond=True 时，同一 action 配不同 t，输出必须不同"""
+    enc = ActionEncoder(action_dim=7, hidden_size=64, time_cond=True)
+    action = torch.randn(2, 4, 7)
+    t1 = torch.zeros(2, 64)
+    t2 = torch.ones(2, 64)
+    out1 = enc(action, t1)
+    out2 = enc(action, t2)
+    assert not torch.allclose(out1, out2)   # ← 这条是 time_cond 存在的意义
+    assert out1.shape == (2, 4, 64)
+
+# -------------------------------------测试ProprioEncoder/ActionDecoder------------------------------
+def test_proprio_encoder_shape():
+    enc = ProprioEncoder(proprio_dim=7, proprio_hidden_size=1024)
+    proprios = torch.randn(2, 1, 7)
+    assert enc(proprios).shape == (2, 1, 1024)
+
+
+def test_action_decoder_shape():
+    dec = ActionDecoder(action_hidden_size=1024, action_dim=7)
+    action_hidden = torch.randn(2, 4, 1024)
+    assert dec(action_hidden).shape == (2, 4, 7)
+
+
+def test_action_decoder_grad():
+    dec = ActionDecoder(action_hidden_size=1024, action_dim=7)
+    x = torch.randn(2, 4, 1024, requires_grad=True)
+    out = dec(x)
+    out.sum().backward()
+    assert x.grad is not None
+
+def test_proprio_encoder_grad():
+    enc = ProprioEncoder(proprio_dim=7, proprio_hidden_size=1024)
+    x = torch.randn(2, 1, 7, requires_grad=True)
+    out = enc(x)
+    out.sum().backward()
+    assert x.grad is not None

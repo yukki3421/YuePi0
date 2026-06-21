@@ -1,7 +1,31 @@
 import torch
 from torch import nn
 import math
+from omegaconf import OmegaConf
+
 from model.vla.mixture import Mixture
+
+
+def _to_omega(obj):
+    """把任意 config 对象转成 OmegaConf。
+    支持: OmegaConf 自身 / dict / 普通 Python class 实例。
+    """
+    if OmegaConf.is_config(obj):
+        return obj
+    if isinstance(obj, dict):
+        return OmegaConf.create(obj)
+    # 普通 class 实例：把所有非下划线属性提取成 dict
+    fields = {
+        k: v for k, v in vars(type(obj)).items()
+        if not k.startswith("_") and not callable(v)
+    }
+    # 也提取实例属性（如果有）
+    fields.update({
+        k: v for k, v in vars(obj).items()
+        if not k.startswith("_") and not callable(v)
+    })
+    return OmegaConf.create(fields)
+
 
 class JointModel(nn.Module):
     def __init__(self, config):
@@ -10,10 +34,23 @@ class JointModel(nn.Module):
         self.num_hidden_layers = config.num_hidden_layers
         self.num_mixture = len(config.mixture)
 
+        # 提取joint层的共享字段, 每个mixture都需要的
+        shared_config = OmegaConf.create({
+            "num_heads": config.num_heads,
+            "num_kv_heads": config.num_kv_heads,
+            "head_dim": config.head_dim,
+            "rms_norm_eps": config.rms_norm_eps,
+            "attention_bias": config.attention_bias,
+            "attention_dropout": config.attention_dropout,
+            "num_hidden_layers": config.num_hidden_layers,
+        })
+
         # Mixtures: VLM, proprio, action
         self.mixtures = nn.ModuleDict()
         for mixture_name, mixture_config in config.mixture.items():
-            self.mixtures[mixture_name] = Mixture(mixture_config)
+            mixture_config = _to_omega(mixture_config)
+            merged = OmegaConf.merge(shared_config, mixture_config)
+            self.mixtures[mixture_name] = Mixture(merged)
         self.mixture_names = list(self.mixtures.keys())
 
     def forward(self, attention_mask, position_ids_all, embeds_all):

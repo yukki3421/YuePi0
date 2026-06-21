@@ -84,6 +84,12 @@ def test_forward_mixture_layers_shape(mixtures):
 
 class FakeJointConfig:
     num_hidden_layers = 3
+    num_heads = 8
+    num_kv_heads = 4
+    head_dim = 32
+    rms_norm_eps = 1e-6
+    attention_bias = False
+    attention_dropout = 0.0
     mixture = {
         "vlm": FakeConfig(),
         "proprio": FakeConfig(),
@@ -133,6 +139,12 @@ class SmallHiddenConfig:
 
 class FakeJointConfigMixedHidden:
     num_hidden_layers = 3
+    num_heads = 8
+    num_kv_heads = 4
+    head_dim = 32
+    rms_norm_eps = 1e-6
+    attention_bias = False
+    attention_dropout = 0.0
     mixture = {
         "vlm": FakeConfig(),             # hidden_size = 256
         "proprio": SmallHiddenConfig(),  # hidden_size = 128
