@@ -1,11 +1,33 @@
-# 最小化配置, 只包含PaliGemmaEmbedder需要的字段
+# ========================================PiZero顶层配置============================================
+# Tokenizer 文本
 vocab_size: 257216
 hidden_size: 2048
 pad_token_id: 0
-image_token_index: 25715
-pretrained_model_path: '/home/cxy/.cache/huggingface/hub/paligemma-3b-pt-224'
-max_seq_len: 276 # image + prompt的最大长度
+image_token_index: 257152
+pretrained_model_path: '${oc.env:HOME}/.cache/huggingface/hub/paligemma-3b-pt-224'
 
+# Sequence 配置
+max_seq_len: 276 # image + prompt的最大长度
+max_image_text_tokens: 276
+cond_steps: 1 # proprio历史步数
+horizon_steps: 4  # 一次预测未来4步的动作
+
+# 物理量维度
+action_dim: 7
+proprio_dim: 7
+
+action_hidden_size: 1024
+proprio_hidden_size: 1024
+time_hidden_size: 256
+num_inference_steps: 10 # 推理时去噪的步数
+# Time encoder
+time_max_period: 100.0
+
+# Action expert mode
+action_expert_adaptive_mode:
+action_expert_rope_theta: 100.0
+
+# ===============================================Vision (PaliGemmaEmbedder) 用=====================================
 vision_config:
   hidden_size: 1152
   intermediate_size: 4304 # MLP的隐藏层
@@ -17,3 +39,35 @@ vision_config:
   layer_norm_eps: 1e-6
   attention_dropout: 0.0
   projection_dim: 2048
+
+# ==============================================Mixture (3个Expert各自的配置) =======================================
+mixture:
+  vlm:
+    hidden_size: 2048
+    intermediate_size: 16384
+    rope_theta: 10000.0
+    adaptive_mode: # vlm永远不用adaptive
+  
+  proprio:
+    hidden_size: 1024
+    intermediate_size: 4096
+    rope_theta: ${action_expert_rope_theta}
+    adaptive_mode: ${action_expert_adaptive_mode}
+  
+  action:
+    hidden_size: 1024
+    intermediate_size: 4096
+    rope_theta: ${action_expert_rope_theta}
+    adaptive_mode: ${action_expert_adaptive_mode}
+
+joint:
+  num_hidden_layers: 18
+  num_heads: 8
+  num_kv_heads: 1
+  head_dim: 256
+  mixture: ${mixture}
+  attention_bias: False
+  attention_dropout: 0.0
+  rms_norm_eps: 1e-6
+
+
