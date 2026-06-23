@@ -20,8 +20,10 @@ action_hidden_size: 1024
 proprio_hidden_size: 1024
 time_hidden_size: 256
 num_inference_steps: 10 # 推理时去噪的步数
+
 # Time encoder
 time_max_period: 100.0
+flow_sig_min: 0.001
 
 # Action expert mode
 action_expert_adaptive_mode:

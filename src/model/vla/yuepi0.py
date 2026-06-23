@@ -95,6 +95,7 @@ class PiZero(nn.Module):
         self.total_num_tokens = self.max_image_text_tokens + self.num_proprio_tokens + self.num_action_tokens
 
         self.action_dim = config.action_dim
+        self.flow_sig_min = config.get("flow_sig_min", 0.001)
 
         self.embedder = PaliGemmaEmbedder(config)
         self.joint = JointModel(config.joint)
@@ -127,7 +128,8 @@ class PiZero(nn.Module):
         t = torch.rand(B, device=action.device) # 生成均匀分布(0, 1)之间的随机数, 正好是Flow Matching所需要的
         noise = torch.randn_like(action)
         t_b = t[:, None, None]
-        x_t = (1 - t_b) * noise + t_b * action # 1024
+        sig = self.flow_sig_min
+        x_t = (1 - (1-sig) * t_b) * noise + t_b * action # 1024
 
         # 步骤3：t embeddig + atciont(x_t) embedding
         time_emb = self.time_encoder(t) # 256
@@ -146,7 +148,7 @@ class PiZero(nn.Module):
         v_pred = self.action_decoder(out['action'])
 
         # 步骤7： FM Loss
-        v_target = action - noise # 真实速度场, 先用最简单的x_t = (1-t)*x_0 + t*x_1 
+        v_target = action - (1-sig) * noise # 真实速度场, 先用最简单的x_t = (1-t)*x_0 + t*x_1
         loss = torch.mean((v_pred - v_target) ** 2)
         return loss
 
