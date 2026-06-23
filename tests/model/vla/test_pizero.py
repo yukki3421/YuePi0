@@ -1,7 +1,7 @@
-import torch                                                                                                                                                                                  
-from omegaconf import OmegaConf                                                                                                                                                               
+import torch
+from omegaconf import OmegaConf
 from model.vla.yuepi0 import PiZero
-
+import pytest
 def _load_cfg():
     cfg = OmegaConf.load('config/yuepi0.yaml')
     # 缩小 ViT 让 CPU 跑得动                                                                                                                                                                  
@@ -47,5 +47,19 @@ def test_pizero_infer_action_shape():
                                                                                                                                                                                             
     actions = model.infer_action(batch, num_inference_steps=3)   # 测试用 3 步省时间                                                                                                          
                                                                                                                                                                                             
-    assert actions.shape == (B, cfg.horizon_steps, cfg.action_dim)                                                                                                                            
+    assert actions.shape == (B, cfg.horizon_steps, cfg.action_dim)
+    assert torch.isfinite(actions).all()
+
+
+@pytest.mark.parametrize("mode", [None, "adaLN", "adaLN-Zero"])
+def test_pizero_adaptive_modes(mode):
+    cfg = _load_cfg()
+    cfg.action_expert_adaptive_mode = mode
+    model = PiZero(cfg)
+    loss = model(_make_batch(cfg))
+    assert torch.isfinite(loss)
+    # 也测一下推理
+    model.eval()
+    actions = model.infer_action(_make_batch(cfg, B=1), num_inference_steps=2)
+    assert actions.shape == (1, cfg.horizon_steps, cfg.action_dim)
     assert torch.isfinite(actions).all()

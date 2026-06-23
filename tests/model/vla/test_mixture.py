@@ -12,6 +12,7 @@ class FakeConfig:
     rope_theta = 10000
     rms_norm_eps = 1e-6
     attention_bias = False
+    use_final_norm = True
 
 @pytest.fixture
 def mix():

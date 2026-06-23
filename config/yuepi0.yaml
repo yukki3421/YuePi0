@@ -48,18 +48,21 @@ mixture:
     hidden_size: 2048
     intermediate_size: 16384
     rope_theta: 10000.0
+    use_final_norm: False
     adaptive_mode: # vlm永远不用adaptive
   
   proprio:
     hidden_size: 1024
     intermediate_size: 4096
     rope_theta: ${action_expert_rope_theta}
+    use_final_norm: True
     adaptive_mode: ${action_expert_adaptive_mode}
   
   action:
     hidden_size: 1024
     intermediate_size: 4096
     rope_theta: ${action_expert_rope_theta}
+    use_final_norm: True
     adaptive_mode: ${action_expert_adaptive_mode}
 
 joint:
@@ -71,5 +74,6 @@ joint:
   attention_bias: False
   attention_dropout: 0.0
   rms_norm_eps: 1e-6
+  time_hidden_size: ${time_hidden_size}
 
 

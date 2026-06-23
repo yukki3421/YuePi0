@@ -78,7 +78,18 @@ class AdaptiveRMSNorm(nn.Module):
         return x_norm * (1+scale) + shift
     
 class AdaptiveLayerscale(nn.Module):
-    pass
+    def __init__(self, dim: int, dim_cond: int, adaln_zero_bias_init_value: float=-2.0):
+        super().__init__()
+        adaln_zero_gamma_linear = nn.Linear(dim_cond, dim)
+        nn.init.zeros_(adaln_zero_gamma_linear.weight)
+        nn.init.constant_(adaln_zero_gamma_linear.bias, adaln_zero_bias_init_value) # 偏置初始化为一个常数
+        self.to_adaln_zero_gamma = adaln_zero_gamma_linear
+
+    def forward(self, x: torch.FloatTensor, cond: torch.FloatTensor) -> torch.FloatTensor:
+        if cond.ndim == 2:
+            cond = cond.unsqueeze(1)
+        gamma = self.to_adaln_zero_gamma(cond)
+        return x * gamma.sigmoid()
 
 
 class ProprioEncoder(nn.Module):

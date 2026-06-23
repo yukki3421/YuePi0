@@ -14,6 +14,7 @@ class FakeConfig:
     rope_theta = 10000
     rms_norm_eps = 1e-6
     attention_bias = False
+    use_final_norm = True
 
 @pytest.fixture
 def mixtures():
@@ -90,6 +91,7 @@ class FakeJointConfig:
     rms_norm_eps = 1e-6
     attention_bias = False
     attention_dropout = 0.0
+    time_hidden_size = 256
     mixture = {
         "vlm": FakeConfig(),
         "proprio": FakeConfig(),
@@ -136,6 +138,7 @@ class SmallHiddenConfig:
     rope_theta = 10000
     rms_norm_eps = 1e-6
     attention_bias = False
+    use_final_norm = True
 
 class FakeJointConfigMixedHidden:
     num_hidden_layers = 3
@@ -145,6 +148,7 @@ class FakeJointConfigMixedHidden:
     rms_norm_eps = 1e-6
     attention_bias = False
     attention_dropout = 0.0
+    time_hidden_size = 256
     mixture = {
         "vlm": FakeConfig(),             # hidden_size = 256
         "proprio": SmallHiddenConfig(),  # hidden_size = 128

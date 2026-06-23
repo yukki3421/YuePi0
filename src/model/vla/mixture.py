@@ -1,10 +1,11 @@
 import torch
 from torch import nn
+from typing import Optional, Tuple
 
 from model.paligemma.gemma import GemmaMLP
 from model.paligemma.modules import GemmaRoPE, GemmaRMSNorm
 from model.utils import repeat_kv, apply_rotary_pos_emb
-from model.vla.modules import AdaptiveRMSNorm
+from model.vla.modules import AdaptiveRMSNorm, AdaptiveLayerscale
 
 class MixtureAttention(nn.Module):
     def __init__(self, config):
@@ -69,22 +70,48 @@ class MixtureDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.self_attn = MixtureAttention(config)
         self.mlp = GemmaMLP(config)
+
         # adaptive_mode决定用哪一种norm
         self.adaptive_mode = getattr(config, "adaptive_mode", None)
         if self.adaptive_mode:
-            self.input_layernorm = AdaptiveRMSNorm(self.hidden_size, config.time_hidden_size, config.rms_norm_eps)
-            self.post_attention_layernorm = AdaptiveRMSNorm(self.hidden_size, config.time_hidden_size, config.rms_norm_eps)
+            self.input_layernorm = AdaptiveRMSNorm(
+                self.hidden_size,
+                config.time_hidden_size,
+                config.rms_norm_eps)
+            self.post_attention_layernorm = AdaptiveRMSNorm(
+                self.hidden_size,
+                config.time_hidden_size,
+                config.rms_norm_eps)
+
+            if self.adaptive_mode == "adaLN-Zero":
+                self.post_attention_scale = AdaptiveLayerscale(
+                    self.hidden_size, config.time_hidden_size)
+                self.final_adaptive_scale = AdaptiveLayerscale(
+                    self.hidden_size, config.time_hidden_size)
         else:
             self.input_layernorm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
             self.post_attention_layernorm = GemmaRMSNorm(self.hidden_size, config.rms_norm_eps)
 
     def forward_norm(
         self,
-        norm_name: str, # norm_name 应该为 input_layernorm or post_attention_layernorm
-        x: torch.FloatTensor
+        norm_name: str, # norm_name 应该为 input_layernorm or post_attention_layernorm or
+        x: torch.FloatTensor,
+        time_cond: torch.FloatTensor = None
     ) -> torch.FloatTensor:
-        return getattr(self, norm_name)(x)
+        args = [x] if self.adaptive_mode is None else [x, time_cond]
+        norm = getattr(self, norm_name)
+        return norm(*args)
 
+    def forward_adaptive_scale(self, stage, x, time_cond=None):
+        '''stage: post_attention_scale 或 'final_adaptive_scale'''
+        if self.adaptive_mode != "adaLN-Zero":
+            return x
+        if stage == "final":
+            return self.final_adaptive_scale(x, time_cond)
+        elif stage == "post_attn":
+            return self.post_attention_scale(x, time_cond)
+        else:
+            raise ValueError(f"Invalid stage for adaptive scaling: {stage}")
 
 class Mixture(nn.Module):
     def __init__(self, config):
@@ -92,7 +119,16 @@ class Mixture(nn.Module):
         self.layers = nn.ModuleList([
             MixtureDecoderLayer(config) for _ in range(config.num_hidden_layers)
         ])
-        self.norm = GemmaRMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.adaptive_mode = None
+        if config.use_final_norm:
+            self.adaptive_mode = getattr(config, "adaptive_mode", None)
+            if self.adaptive_mode:
+                self.norm = AdaptiveRMSNorm(
+                    config.hidden_size,
+                    config.time_hidden_size,
+                    eps=config.rms_norm_eps)
+            else:
+                self.norm = GemmaRMSNorm(config.hidden_size, config.rms_norm_eps)
 
     @property
     def head_dim(self) -> int:
@@ -125,9 +161,9 @@ class Mixture(nn.Module):
         return getattr(self.layers[layer_idx].self_attn, method_name)(*args)
 
     # 整个expert最后的norm
-    def forward_norm(self, x: torch.FloatTensor) -> torch.FloatTensor:
+    def forward_norm(self, x: torch.FloatTensor, time_cond: Optional[torch.FloatTensor] = None) -> torch.FloatTensor:
         if hasattr(self, "norm"):
-            args = [x]
+            args = [x] if self.adaptive_mode is None else [x, time_cond]
             return self.norm(*args)
         return None
 

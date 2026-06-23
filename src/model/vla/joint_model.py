@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import math
 from omegaconf import OmegaConf
-
+from typing import Optional
 from model.vla.mixture import Mixture
 
 
@@ -43,6 +43,7 @@ class JointModel(nn.Module):
             "attention_bias": config.attention_bias,
             "attention_dropout": config.attention_dropout,
             "num_hidden_layers": config.num_hidden_layers,
+            "time_hidden_size": config.time_hidden_size,
         })
 
         # Mixtures: VLM, proprio, action
@@ -53,7 +54,7 @@ class JointModel(nn.Module):
             self.mixtures[mixture_name] = Mixture(merged)
         self.mixture_names = list(self.mixtures.keys())
 
-    def forward(self, attention_mask, position_ids_all, embeds_all):
+    def forward(self, attention_mask, position_ids_all, embeds_all, time_cond=None):
         # 把 N 层 forward_mixture_layers 串起来，最后做 final norm
         active_mixture_names = list(embeds_all.keys())
 
@@ -80,11 +81,12 @@ class JointModel(nn.Module):
                 position_ids_all,
                 hidden_states,
                 layer_idx,
+                time_cond=time_cond,
             )
         # 3. norm
         hidden_states_all = {}
         for name in active_mixture_names:
-            hidden_states_all[name] = self.mixtures[name].forward_norm( hidden_states[name] )
+            hidden_states_all[name] = self.mixtures[name].forward_norm( hidden_states[name], time_cond=time_cond)
         return hidden_states_all
 
 # 一层里的联合attention
@@ -180,7 +182,8 @@ def forward_mixture_layers(
         attention_mask: torch.FloatTensor, # (B, h, T, T), 所有 image+text的
         position_ids_all: dict[torch.LongTensor],
         embeds_all: dict[torch.FloatTensor],
-        layer_idx: int
+        layer_idx: int,
+        time_cond: Optional[torch.FloatTensor] = None
 ) -> dict[torch.FloatTensor]:
     active_mixture_names = list(embeds_all.keys())
 
@@ -193,7 +196,7 @@ def forward_mixture_layers(
             "forward_norm",
             layer_idx,
             "input_layernorm",
-            embeds_all[name]
+            embeds_all[name], time_cond
         )
     hidden_states_pre_attn = hidden_states_input_norm
     ''' hidden_states_pre_attn['vlm'].shape
@@ -211,9 +214,13 @@ def forward_mixture_layers(
         layer_idx)
 
     # hidden_states_post_attn [B, T, hidden_size]
-    # 3) 做残差连接
+    # 3) 做残差连接: 先做adaptive_scale，再连接残差
     hidden_states_post_res = {}
     for name in active_mixture_names:
+        hidden_states_post_attn[name] = mixtures[name].layer_func(
+            "forward_adaptive_scale", layer_idx,
+            "post_attn", hidden_states_post_attn[name], time_cond,
+        )
         hidden_states_post_res[name] = residuals_pre_attn[name] + hidden_states_post_attn[name]
     residuals_pre_mlp = hidden_states_post_res
 
@@ -222,15 +229,19 @@ def forward_mixture_layers(
     hidden_states_post_mlp = {}
     for name in active_mixture_names:
         hidden_states_post_norm[name] = mixtures[name].layer_func(
-            "forward_norm", layer_idx, "post_attention_layernorm", hidden_states_post_res[name]
+            "forward_norm", layer_idx, "post_attention_layernorm", hidden_states_post_res[name], time_cond,
         )
         hidden_states_post_mlp[name] = mixtures[name].layer_func(
             "mlp", layer_idx, hidden_states_post_norm[name]
         )
 
-    # 5) 残差合并
+    # 5) 残差合并: 先把MLP的结果做一次adaptive_scale， 再连接残差
     hidden_states_final = {}
     for name in active_mixture_names:
+        hidden_states_post_mlp[name] = mixtures[name].layer_func(
+            "forward_adaptive_scale", layer_idx,
+            "final", hidden_states_post_mlp[name], time_cond
+        )
         hidden_states_final[name] = residuals_pre_mlp[name] + hidden_states_post_mlp[name]
 
     return hidden_states_final

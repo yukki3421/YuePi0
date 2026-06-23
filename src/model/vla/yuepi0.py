@@ -96,11 +96,18 @@ class PiZero(nn.Module):
 
         self.action_dim = config.action_dim
         self.flow_sig_min = config.get("flow_sig_min", 0.001)
+        self.adaptive_mode = config.action_expert_adaptive_mode
 
         self.embedder = PaliGemmaEmbedder(config)
         self.joint = JointModel(config.joint)
-        self.time_encoder = TimeEncoder(config.action_hidden_size) # action和time必须同维度才能cat
-        self.action_encoder = ActionEncoder(config.action_dim, config.action_hidden_size, True)
+        if self.adaptive_mode:
+            # adaLN / adaLN-Zero:time 用 256 维,不 cat 进 action
+            self.time_encoder = TimeEncoder(config.time_hidden_size)
+            self.action_encoder = ActionEncoder(config.action_dim, config.action_hidden_size, time_cond=False)
+        else:
+            # # 朴素 time_cond:time 必须 1024 维,跟 action cat
+            self.time_encoder = TimeEncoder(config.action_hidden_size) # action和time必须同维度才能cat
+            self.action_encoder = ActionEncoder(config.action_dim, config.action_hidden_size, time_cond=True)
         self.proprio_encoder = ProprioEncoder(config.proprio_dim, config.proprio_hidden_size)
         self.action_decoder = ActionDecoder(config.action_hidden_size, config.action_dim)
 
@@ -142,7 +149,7 @@ class PiZero(nn.Module):
         # 步骤5: joint forward
         embeds_all = {"vlm": vlm_emb, "proprio": proprio_emb, "action": action_emb}
         positions_all = {"vlm": vlm_position_ids, "proprio": proprio_position_ids, "action": action_position_ids}
-        out = self.joint(causal_mask, positions_all, embeds_all)
+        out = self.joint(causal_mask, positions_all, embeds_all, time_cond=time_emb if self.adaptive_mode else None)
 
         # 步骤6：action_expert -> 预测速度
         v_pred = self.action_decoder(out['action'])
@@ -174,7 +181,7 @@ class PiZero(nn.Module):
         proprio_emb = self.proprio_encoder(proprio)
         causal_mask, vlm_pos, proprio_pos, action_pos = self.build_mask_and_position_ids(attention_mask, dtype) 
         position_ids_all = {'vlm': vlm_pos, "proprio": proprio_pos, "action": action_pos}
-        embeds_all = {'vlm': vlm_emb, 'proprio': proprio_emb}
+        embeds_all = {'vlm': vlm_emb.clone(), 'proprio': proprio_emb.clone()}
         # 步骤2：从纯噪声出发
         x = torch.randn(B, self.num_action_tokens, self.action_dim, device=device, dtype=dtype)
         # 步骤3：欧拉积分
@@ -183,10 +190,13 @@ class PiZero(nn.Module):
         for _ in range(num_inference_steps):
             # 编码当前x 和 t
             time_emb = self.time_encoder(t)
-            action_emb = self.action_encoder(x, time_emb)
-            embeds_all['action'] = action_emb
+            if self.adaptive_mode:
+                action_emb = self.action_encoder(x)
+            else:
+                action_emb = self.action_encoder(x, time_emb)
+            embeds_all['action'] = action_emb.clone()
             # 拿到当前位置的速度场
-            out = self.joint(causal_mask, position_ids_all, embeds_all)
+            out = self.joint(causal_mask, position_ids_all, embeds_all, time_cond=time_emb if self.adaptive_mode else None)
             v = self.action_decoder(out['action'])
             # Euler 
             x = x + dt * v
