@@ -17,8 +17,8 @@ def _make_batch(cfg, B=2):
         "input_ids": torch.randint(0, cfg.vocab_size, (B, cfg.max_image_text_tokens)),
         "pixel_values": torch.randn(B, 3, 224, 224),
         "attention_mask": torch.ones(B, cfg.max_image_text_tokens, dtype=torch.long),
-        "proprio":        torch.randn(B, cfg.cond_steps, cfg.proprio_dim),                                                                                                                    
-          "action":         torch.randn(B, cfg.horizon_steps, cfg.action_dim),
+        "proprio":        torch.randn(B, cfg.cond_steps, cfg.proprio_dim),
+        "action":         torch.randn(B, cfg.horizon_steps, cfg.action_dim),
     }
 
 def test_pizero_forward_loss_finite():

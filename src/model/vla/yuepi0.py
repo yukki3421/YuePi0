@@ -150,7 +150,7 @@ class PiZero(nn.Module):
         loss = torch.mean((v_pred - v_target) ** 2)
         return loss
 
-    @torch.no_grad
+    @torch.no_grad()
     def infer_action(self, batch, num_inference_steps: int = 10):
         '''batch:                                                                                                                                                                                    
           input_ids:      (B, max_image_text_tokens)   ← VLM 文本+图像占位
@@ -174,7 +174,7 @@ class PiZero(nn.Module):
         position_ids_all = {'vlm': vlm_pos, "proprio": proprio_pos, "action": action_pos}
         embeds_all = {'vlm': vlm_emb, 'proprio': proprio_emb}
         # 步骤2：从纯噪声出发
-        x = torch.rand(B, self.num_action_tokens, self.action_dim, device=device, dtype=dtype)
+        x = torch.randn(B, self.num_action_tokens, self.action_dim, device=device, dtype=dtype)
         # 步骤3：欧拉积分
         dt = 1.0 / num_inference_steps
         t = torch.zeros(B, device=device, dtype=dtype)
