@@ -31,16 +31,20 @@ YuePi0 (月Pi0) is a hand-written re-implementation of [π0](https://www.physica
 **π0-specific composition**
 
 - VLA preprocessor (multi-modal prompt + image tiling + action chunk packing)
-- Mixture-of-Transformers (MoT) scaffold — VLM expert + action expert
+- Mixture-of-Transformers (MoT) scaffold — VLM expert + proprio expert + action expert
 - Joint attention dispatcher across experts (`getattr`-based layer routing)
 - Per-expert RoPE / KV-Cache wiring
+- Block-wise causal mask (VLM causal · proprio/action bidirectional within block)
+- Action expert head: TimeEncoder (sinusoidal) + ActionEncoder + ActionDecoder
+- Flow-matching training loss with (1−σ_min) conditional probability path
+- Euler-integrator inference loop (image → proprio → action chunk)
+- adaLN / adaLN-Zero adaptive normalization for the action expert (selectable via `action_expert_adaptive_mode`)
 
 **Roadmap (in progress)**
 
-- Action expert head + flow-matching loss
-- Trajectory sampling (Euler / RK integrators)
-- Inference loop (image → text → action chunk)
 - LeRobot dataset adapter & training script
+- Numerical parity (`allclose`) against `open-pi-zero` weights for the joint model
+- KV-cache enablement during multi-step Euler inference
 
 See the up-to-date checklist below.
 
@@ -52,9 +56,11 @@ See the up-to-date checklist below.
 - [x] ViT / SigLip
 - [x] Gemma decoder
 - [x] Mixture + JointModel scaffold
-- [ ] Action Expert
-- [ ] Flow-Matching loss & sampler
-- [ ] End-to-end forward / inference
+- [x] Action Expert (Time / Action / Proprio encoders + decoder)
+- [x] Flow-Matching loss & sampler (σ_min schedule + Euler integrator)
+- [x] End-to-end forward / inference (`PiZero.forward` + `PiZero.infer_action`)
+- [x] adaLN / adaLN-Zero adaptive mode for action expert
+- [ ] Numerical parity vs `open-pi-zero` (joint model)
 - [ ] Training loop on a small LeRobot dataset
 
 ## Getting Started
@@ -84,6 +90,8 @@ pytest tests/model/paligemma/test_vit.py        # SigLip vision tower
 pytest tests/model/paligemma/test_gemma.py      # Gemma decoder
 pytest tests/model/paligemma/test_gemma_allclose.py  # numerical parity vs HF
 pytest tests/model/vla/test_mixture.py          # MoT dispatcher
+pytest tests/model/vla/test_joint_model.py      # joint attention across experts
+pytest tests/model/vla/test_pizero.py           # end-to-end forward / inference / adaptive modes
 ```
 
 ## Repository Layout
