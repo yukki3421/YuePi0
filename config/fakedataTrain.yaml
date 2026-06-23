@@ -1,3 +1,10 @@
+num_samples: 4
+batch_size: 2
+num_steps: 200 # 总训练步数
+lr: 1e-4
+log_every: 10 #每十步打印一次loss
+seed: 42
+
 # ========================================PiZero顶层配置============================================
 # Tokenizer 文本
 vocab_size: 257216
@@ -67,7 +74,7 @@ mixture:
     adaptive_mode: ${action_expert_adaptive_mode}
 
 joint:
-  num_hidden_layers: 18
+  num_hidden_layers: 4
   num_heads: 8
   num_kv_heads: 1
   head_dim: 256
