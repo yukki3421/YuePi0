@@ -48,7 +48,7 @@ class GemmaRoPE(nn.Module):
         angers = torch.cat((angers, angers), dim=-1)
         cos = angers.cos() 
         sin = angers.sin()
-        return cos, sin
+        return cos.to(qk.dtype), sin.to(qk.dtype)
 
 
 
