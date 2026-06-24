@@ -30,3 +30,59 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
         slen,
         head_dim,
     )
+
+"""把 HF PaliGemma checkpoint 的 state_dict 映射到 YuePi0 PiZero 上。"""                                                                             
+from pathlib import Path                                                                                                                             
+from safetensors import safe_open
+                                                                                                                                                    
+                                                                                                                                                    
+def hf_key_to_yuepi0_key(hf_key: str) -> str | None:                                                                                                 
+    """HF 的一个 key → YuePi0 的 key。None 表示该 key 丢弃。"""                                                                                      
+    if hf_key == "language_model.model.embed_tokens.weight":                                                                                         
+        return "embedder.embed_tokens.weight"                                                                                                        
+    if hf_key.startswith("language_model.model.layers."):                                                                                            
+        return hf_key.replace("language_model.model", "joint.mixtures.vlm")                                                                          
+    if hf_key == "language_model.model.norm.weight":                                                                                                 
+        return None                                                                                                                                  
+    if hf_key.startswith("multi_modal_projector."):                                                                                                  
+        return "embedder." + hf_key                                                                                                                  
+    if hf_key.startswith("vision_tower."):
+        return "embedder." + hf_key                                                                                                                  
+    raise ValueError(f"Unmapped HF key: {hf_key}")
+                                                                                                                                                    
+                                                                                                                                                    
+def load_paligemma_weights(model, hf_path: Path):                                                                                                    
+    """读 HF safetensors, 按映射加载到 model 上, 返回加载/跳过统计。"""                                                                              
+    hf_state = {}                                                                                                                                    
+    for shard in sorted(hf_path.glob("*.safetensors")):
+        with safe_open(shard, framework="pt") as f:                                                                                                  
+            for k in f.keys():                                                                                                                       
+                hf_state[k] = f.get_tensor(k)                                                                                                        
+                                                                                                                                                    
+    own_state = model.state_dict()
+    loaded, skipped, shape_mismatch = [], [], []                                                                                                     
+                                                                                                                                                    
+    for hf_k, tensor in hf_state.items():                                                                                                            
+        yp_k = hf_key_to_yuepi0_key(hf_k)                                                                                                            
+        if yp_k is None:                                                                                                                             
+            skipped.append(hf_k)                                                                                                                     
+            continue
+        if yp_k not in own_state:                                                                                                                    
+            raise KeyError(f"Mapped key not found in PiZero: {yp_k}")                                                                                
+        if own_state[yp_k].shape != tensor.shape:                                                                                                    
+            shape_mismatch.append((yp_k, own_state[yp_k].shape, tensor.shape))                                                                       
+            continue                                                                                                                                 
+        own_state[yp_k].copy_(tensor)                                                                                                                
+        loaded.append(yp_k)                                                                                                                          
+                                                                                                                                                    
+    return {"loaded": loaded, "skipped": skipped, "shape_mismatch": shape_mismatch}
+
+def to_device_bf16(inputs: dict, device) -> dict:
+    """把 dict 里所有 tensor 搬到 device, 浮点的额外转 bf16, 整数/布尔保持原 dtype。"""
+    out = {}
+    for k, v in inputs.items():
+        v = v.to(device)
+        if v.is_floating_point():
+            v = v.to(torch.bfloat16)
+        out[k] = v
+    return out
