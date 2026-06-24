@@ -15,8 +15,6 @@ class PaliGemmaEmbedder(nn.Module):
         # 而是分成三段 [ 图像+文本 tokens ][ 机器人状态 tokens ][ 动作 tokens ]
         self.image_text_hidden_size = cfg.hidden_size
 
-        self.num_inference_steps = cfg.num_inference_steps # Flow Matching 推理时去噪的步数。10
-
         #  Gemma 语言模型的词嵌入层
         self.embed_tokens = nn.Embedding(
             cfg.vocab_size,
@@ -98,6 +96,9 @@ class PiZero(nn.Module):
         self.flow_sig_min = config.get("flow_sig_min", 0.001)
         self.adaptive_mode = config.action_expert_adaptive_mode
 
+        self.final_action_clip_value = config.get("final_action_clip_value", None)  
+        self.num_inference_steps = config.num_inference_steps # Flow Matching 推理时去噪的步数。10
+
         self.embedder = PaliGemmaEmbedder(config)
         self.joint = JointModel(config.joint)
         if self.adaptive_mode:
@@ -132,7 +133,7 @@ class PiZero(nn.Module):
 
         # 步骤2： FM采样
         B, T_a, A = action.shape
-        t = torch.rand(B, device=action.device) # 生成均匀分布(0, 1)之间的随机数, 正好是Flow Matching所需要的
+        t = torch.rand(B, device=action.device, dtype=action.dtype) # 生成均匀分布(0, 1)之间的随机数, 正好是Flow Matching所需要的
         noise = torch.randn_like(action)
         t_b = t[:, None, None]
         sig = self.flow_sig_min
@@ -140,7 +141,10 @@ class PiZero(nn.Module):
 
         # 步骤3：t embeddig + atciont(x_t) embedding
         time_emb = self.time_encoder(t) # 256
-        action_emb = self.action_encoder(x_t, time_emb)
+        if self.adaptive_mode:
+            action_emb = self.action_encoder(x_t) # # adaLN: time 走 norm，不进 encoder
+        else:
+            action_emb = self.action_encoder(x_t, time_emb) # 朴素: time 和 action cat
 
         # 步骤4：position_ids + block-wise causal mask
         causal_mask, vlm_position_ids, proprio_position_ids, action_position_ids = \
@@ -201,6 +205,12 @@ class PiZero(nn.Module):
             # Euler 
             x = x + dt * v
             t = t + dt
+        if self.final_action_clip_value is not None:                                                                                                     
+            x = torch.clamp(
+                x,
+                -self.final_action_clip_value,
+                self.final_action_clip_value,
+            )                                                                                                                                            
         return x
 
     def build_mask_and_position_ids(self, attention_mask, dtype:torch.dtype):

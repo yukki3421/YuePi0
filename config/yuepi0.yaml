@@ -34,7 +34,7 @@ vision_config:
   num_image_tokens: 256
   hidden_size: 1152
   intermediate_size: 4304 # MLP的隐藏层
-  num_hidden_layers: 2 # 先用两层ViTEncoderLayer
+  num_hidden_layers: 27 # 先用两层ViTEncoderLayer
   num_attention_heads: 16
   num_channels: 3
   image_size: 224

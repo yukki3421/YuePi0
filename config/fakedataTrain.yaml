@@ -1,9 +1,10 @@
 num_samples: 4
 batch_size: 2
-num_steps: 200 # 总训练步数
+num_steps: 500 # 总训练步数
 lr: 1e-4
 log_every: 10 #每十步打印一次loss
 seed: 42
+final_action_clip_value: 1.0   # 推理末尾把action截到[-1, 1], 设null关闭  
 
 # ========================================PiZero顶层配置============================================
 # Tokenizer 文本
