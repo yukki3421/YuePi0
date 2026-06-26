@@ -222,3 +222,7 @@ __marimo__/
 VLLM.md
 
 .vscode
+
+tmp/
+
+checkpoints/
