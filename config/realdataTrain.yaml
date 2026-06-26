@@ -1,4 +1,6 @@
 # =====================================训练参数配置================================================
+data_dir: '${oc.env:HOME}/datasets/bridge_dataset/1.0.0'
+max_episodes: 10
 # 训练超参 (从 fakedataTrain.yaml 复制)                                                                                                              
 num_samples: 4                                                                                                                                       
 batch_size: 2
