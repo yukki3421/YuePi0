@@ -329,7 +329,109 @@ def get_image_demo():
         print(f"action_chunk first={action_chunk[0].round(4).tolist()}")
         print(f"action_chunk last ={action_chunk[-1].round(4).tolist()}")
 
+def sample_demo():
+    import json
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=str(Path.home() / "datasets" / "bridge_dataset" / "1.0.0"),
+    )
+    parser.add_argument("--out-dir", type=str, default="tmp/bridge_inspect")
+    args = parser.parse_args()
+
+    data_dir = Path(args.data_dir)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print()                                                                                                                                              
+    print("=" * 60)                                                                                                                                      
+    print("[sample normalize demo]")                                                                                                                     
+    print("=" * 60) 
+
+    stats_files = list(data_dir.glob("action_proprio_stats_*.json"))
+    assert len(stats_files) > 0, f"No stats file found in {data_dir}"
+    stats_path = stats_files[0]
+    
+    with open(stats_path, "r") as f:
+        stats = json.load(f)
+
+    action_mean = np.array(stats["action"]["mean"], dtype=np.float32)
+    action_std = np.array(stats["action"]["std"], dtype=np.float32)
+    proprio_mean = np.array(stats["proprio"]["mean"], dtype=np.float32)
+    proprio_std = np.array(stats["proprio"]["std"], dtype=np.float32)
+
+    builder = tfds.builder_from_directory(str(data_dir))
+    ds = builder.as_dataset(split="train", shuffle_files=False)
+
+    episode = next(iter(ds))
+    steps = list(episode['steps'])
+    T = len(steps)
+
+    actions = np.stack([s["action"].numpy() for s in steps])                                                                                             
+    states = np.stack([s["observation"]["state"].numpy() for s in steps]) 
+
+    t = T // 2
+
+    image = steps[t]["observation"]["image_0"].numpy()
+    state = states[t]
+    language = steps[0]["language_instruction"].numpy().decode("utf-8", errors="ignore")
+
+    # resize 256x256 -> 224x224 (PaliGemma / SigLIP 需要 224 输入)
+    # tf.image.resize 返回 float32, 所以再 cast 回 uint8 保持和原图一致
+    image_224 = tf.image.resize(image, (224, 224))
+    image_224 = tf.cast(image_224, tf.uint8).numpy()
+
+    print(f"stats_path = {stats_path.name}")
+    print(f"T = {T}, t = {t}")
+    print(f"language = {language!r}")
+    print(f"image_0 raw shape = {image.shape}, dtype = {image.dtype}, mean = {image.mean():.1f}")
+    print(f"image_0 224 shape = {image_224.shape}, dtype = {image_224.dtype}, mean = {image_224.mean():.1f}")
+
+    action_horizon = 4
+    indices = []
+    chunk = []
+
+    for k in range(action_horizon):
+        idx = t + k
+        if idx >= T:
+            idx = T - 1
+        indices.append(idx)
+        chunk.append(actions[idx])
+    action_chunk = np.stack(chunk)
+
+    state_norm = (state - proprio_mean) / proprio_std
+    action_chunk_norm = (action_chunk - action_mean) / action_std
+    
+    print()                                                                                                                                              
+    print("[state]")                                                                                                                                     
+    print(f"raw  shape = {state.shape}")                                                                                                                 
+    print(f"raw  values = {state.round(4).tolist()}")                                                                                                    
+    print(f"norm shape = {state_norm.shape}")                                                                                                            
+    print(f"norm values = {state_norm.round(4).tolist()}")                                                                                               
+                                                                                                                                                        
+    print()                                                                                                                                              
+    print("[action chunk]")                                                                                                                              
+    print(f"indices = {indices}")                                                                                                                        
+    print(f"raw  shape = {action_chunk.shape}")                                                                                                          
+    print(f"norm shape = {action_chunk_norm.shape}")                                                                                                     
+                                                                                                                                                        
+    print(f"raw  first = {action_chunk[0].round(4).tolist()}")                                                                                           
+    print(f"norm first = {action_chunk_norm[0].round(4).tolist()}")                                                                                      
+                                                                                                                                                        
+    print(f"raw  last  = {action_chunk[-1].round(4).tolist()}")                                                                                          
+    print(f"norm last  = {action_chunk_norm[-1].round(4).tolist()}")                                                                                     
+                                                                                                                                                        
+    print()         
+    print("[stats]")                                                                                                                                     
+    print(f"action_mean  = {action_mean.round(4).tolist()}")                                                                                             
+    print(f"action_std   = {action_std.round(4).tolist()}")                                                                                              
+    print(f"proprio_mean = {proprio_mean.round(4).tolist()}")                                                                                            
+    print(f"proprio_std  = {proprio_std.round(4).tolist()}") 
+
+
 if __name__ == "__main__":
     # main()
     # get_action_chunk_demo()
-    get_image_demo()
+    # get_image_demo()
+    sample_demo()
