@@ -30,7 +30,7 @@ time_hidden_size: 256
 num_inference_steps: 10 # 推理时去噪的步数
 
 # Time encoder
-time_max_period: 100.0
+time_max_period: 10000.0
 flow_sig_min: 0.001
 
 # Action expert mode

@@ -28,7 +28,7 @@ class ActionEncoder(nn.Module):
         emb = self.linear_1(action)
         if self.time_cond:  #将time_emb拓展成(B, 1, time_dim)->(B, T, time_dim)
             time_emb_expand = time_emb.unsqueeze(1).expand(-1, action.size(1), -1)
-            emb = torch.cat([emb, time_emb_expand], dim=-1)
+            emb = torch.cat([time_emb_expand, emb], dim=-1)
         emb = self.nonlinearity(self.linear_2(emb))
         emb = self.linear_3(emb)
 
@@ -48,7 +48,7 @@ class TimeEncoder(nn.Module):
     # 把一个标量 t 映射成 dim 维的稠密向量。每个sample一个时间步
     def forward(self, t):
         i = torch.arange(self.half_dim, dtype=t.dtype, device=t.device)
-        freqs = torch.exp( -math.log(self.max_period) * i / self.half_dim )
+        freqs = torch.exp( -math.log(self.max_period) * i / (self.half_dim -1) )
         angles = t.unsqueeze(-1) * freqs # 变成 (B, half_dim)
         return torch.cat([angles.sin(), angles.cos()], dim=-1)
 

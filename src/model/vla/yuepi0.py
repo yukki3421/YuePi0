@@ -103,11 +103,11 @@ class PiZero(nn.Module):
         self.joint = JointModel(config.joint)
         if self.adaptive_mode:
             # adaLN / adaLN-Zero:time 用 256 维,不 cat 进 action
-            self.time_encoder = TimeEncoder(config.time_hidden_size)
+            self.time_encoder = TimeEncoder(config.time_hidden_size, config.time_max_period)
             self.action_encoder = ActionEncoder(config.action_dim, config.action_hidden_size, time_cond=False)
         else:
             # # 朴素 time_cond:time 必须 1024 维,跟 action cat
-            self.time_encoder = TimeEncoder(config.action_hidden_size) # action和time必须同维度才能cat
+            self.time_encoder = TimeEncoder(config.action_hidden_size, config.time_max_period) # action和time必须同维度才能cat
             self.action_encoder = ActionEncoder(config.action_dim, config.action_hidden_size, time_cond=True)
         self.proprio_encoder = ProprioEncoder(config.proprio_dim, config.proprio_hidden_size)
         self.action_decoder = ActionDecoder(config.action_hidden_size, config.action_dim)
@@ -164,7 +164,7 @@ class PiZero(nn.Module):
         return loss
 
     @torch.no_grad()
-    def infer_action(self, batch, num_inference_steps: int = 10):
+    def infer_action(self, batch, num_inference_steps: int = 10, noise: torch.FloatTensor = None):
         '''batch:                                                                                                                                                                                    
           input_ids:      (B, max_image_text_tokens)   ← VLM 文本+图像占位
           pixel_values:   (B, 3, 224, 224)             ← 图像                                                                                                                                   
@@ -187,7 +187,10 @@ class PiZero(nn.Module):
         position_ids_all = {'vlm': vlm_pos, "proprio": proprio_pos, "action": action_pos}
         embeds_all = {'vlm': vlm_emb.clone(), 'proprio': proprio_emb.clone()}
         # 步骤2：从纯噪声出发
-        x = torch.randn(B, self.num_action_tokens, self.action_dim, device=device, dtype=dtype)
+        if noise is None:
+            x = torch.randn(B, self.num_action_tokens, self.action_dim, device=device, dtype=dtype)
+        else:
+            x = noise.to(device=device, dtype=dtype).clone()
         # 步骤3：欧拉积分
         dt = 1.0 / num_inference_steps
         t = torch.zeros(B, device=device, dtype=dtype)

@@ -95,7 +95,8 @@ def forward_mixture_attn(
         attention_mask: torch.FloatTensor, # 联合mask
         position_ids_all: dict[torch.LongTensor], # 每个expert的position_ids
         embeds_all: dict[torch.FloatTensor],
-        layer_idx: int
+        layer_idx: int,
+        attn_softclamp: float = 50.0,  # default in gemma
 ) -> dict[torch.FloatTensor]:
     bsz = attention_mask.shape[0]
     q_lens = [embed.shape[1] for embed in embeds_all.values()]
@@ -153,8 +154,15 @@ def forward_mixture_attn(
     value_states = torch.cat([v_all[name] for name in active_mixture_names], dim=-2)
     head_dim = query_states.shape[-1]
     attn_scores = torch.matmul(query_states, key_states.transpose(-1, -2)) / math.sqrt(head_dim)
+
+    # 加soft capping
+    attn_scores = attn_scores / attn_softclamp
+    attn_scores = torch.tanh(attn_scores)
+    attn_scores = attn_scores * attn_softclamp
+
     # 加mask, 这里的attention_mask的形状 [B, 1, T, T]
     attn_scores = attn_scores + attention_mask
+    # 加 softmax
     attn_weights = nn.functional.softmax(attn_scores, dim=-1, dtype=torch.float32).to(query_states.dtype)
     # 加权求V
     attn_outputs = attn_weights @ value_states
