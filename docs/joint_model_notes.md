@@ -77,10 +77,16 @@ Q/K/V: (B, num_heads, T_total, head_dim)
 T_total = T_vlm + T_prop + T_action
 ```
 
-第五步：标准 scaled dot-product attention。
+第五步：标准 scaled dot-product attention（含 soft capping）。
 
 ```text
 attn_scores = Q @ K.transpose(-1, -2) / sqrt(head_dim)
+
+# soft capping（softclamp），夹在缩放之后、加 mask 之前
+attn_scores = attn_scores / attn_softclamp
+attn_scores = tanh(attn_scores)
+attn_scores = attn_scores * attn_softclamp
+
 attn_scores = attn_scores + attention_mask
 attn_weights = softmax(attn_scores)
 attn_output = attn_weights @ V
@@ -165,6 +171,86 @@ head_dim 相同
 ```
 
 hidden_size 不同由各自的 q/k/v_proj 和 o_proj 负责适配。
+
+## soft capping（softclamp）
+
+这是 Gemma2 / PaliGemma 在 attention 里用的一个数值稳定技巧，之前漏掉了，补上。
+
+### 它是什么
+
+soft capping（软限幅，也叫 soft cap / logit soft-capping）是一种“软性”地把数值限制在某个范围内的方法。
+
+对比一下硬限幅 hard clamp：
+
+```text
+hard clamp:  clamp(x, -C, C)   # 超过 C 就直接砍平，在 ±C 处有折角，不可导
+soft clamp:  C * tanh(x / C)   # 用 tanh 平滑地逼近 ±C，处处可导
+```
+
+“soft” 就软在：它不是一刀切，而是用一条 S 形曲线平滑过渡到上下界，所以没有梯度断裂。
+
+### 数学公式
+
+```text
+soft_cap(x) = C * tanh(x / C)
+```
+
+其中 C = attn_softclamp（Gemma 默认 50.0）。
+
+代码里拆成三行写，等价于上面这一条公式：
+
+```text
+x = x / C        # 先缩小到 tanh 的敏感区
+x = tanh(x)      # 压进 (-1, 1)
+x = x * C        # 再放大回 (-C, C)
+```
+
+它的几个关键性质：
+
+```text
+值域：       soft_cap(x) ∈ (-C, C)，永远夹在上下界内
+小值近似线性：x → 0 时，tanh(x/C) ≈ x/C，所以 soft_cap(x) ≈ x（几乎不动）
+大值饱和：   |x| → ∞ 时，tanh(±∞) = ±1，所以 soft_cap(x) → ±C
+处处可导：   tanh 光滑，梯度连续，不像 hard clamp 在边界处梯度变 0/突变
+```
+
+### 作用
+
+attention logits（Q·Kᵀ/√d 的结果）偶尔会冲到很大的值。如果直接进 softmax，会得到一个极端尖锐、接近 one-hot 的分布，导致：
+
+```text
+1. 数值不稳定（softmax 里 exp 容易溢出）
+2. 梯度病态（某个 token 几乎吃掉全部权重，其他位置梯度趋近 0）
+```
+
+soft cap 在进 softmax 之前先把 logits 软性压回 (-50, 50)：小的 logits 基本原样保留（不损伤正常信息），异常大的 logits 被平滑钳住。既防爆炸，又因为处处可导而不伤害训练。Gemma2 在 attention logits 和最终 output logits 两处都用了这招。
+
+### 在本模型里的位置
+
+位置：算完 `Q @ K^T / sqrt(head_dim)` 之后、加 mask 和 softmax 之前。
+
+```text
+attn_scores = attn_scores / attn_softclamp
+attn_scores = tanh(attn_scores)
+attn_scores = attn_scores * attn_softclamp
+```
+
+和 mask 的先后顺序很重要：先 soft cap，再加 mask，再 softmax。如果反过来先加 mask（mask 里是很大的负数）再 soft cap，那些屏蔽位会被 tanh 拉回到 -50 附近，反而失去屏蔽效果。所以顺序不能换。
+
+对应原版代码（open-pi-zero/src/model/vla/joint_model.py）：
+
+```python
+# Soft capping
+attn_weights = attn_weights / attn_softclamp
+attn_weights = torch.tanh(attn_weights)
+attn_weights = attn_weights * attn_softclamp
+
+# Apply the softmax / dropout
+attn_weights = attn_weights + attention_mask
+attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(...)
+```
+
+注意原版变量名叫 `attn_weights`，但此时还没 softmax，本质是 logits/scores，别被名字误导。
 
 ## attention_mask 的形状
 
@@ -308,6 +394,7 @@ Flow Matching 训练/推理正确
 8. hidden_size 可以不同，但 num_heads/head_dim 必须一致。
 9. JointModel.forward 不能原地改 embeds_all。
 10. 多层循环必须更新 hidden_states。
+11. soft capping（softclamp）夹在 `/sqrt(head_dim)` 之后、加 mask 之前，顺序不能和 mask 调换。
 
 ## 下一步
 
