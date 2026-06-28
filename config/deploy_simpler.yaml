@@ -1,0 +1,18 @@
+device: cuda
+seed: 42
+act_steps: 4
+horizon_steps: 4
+num_inference_steps: 10
+final_action_clip_value: 1.0
+
+checkpoint_path: ${oc.env:PIZERO_CKPT}
+video_dir: result/video
+env:
+  task:
+  adapter:
+    dataset_statistics_path: config/bridge_statistics.json
+    pretrained_model_path: ${oc.env:TRANSFORMERS_CACHE}/paligemma-3b-pt-224
+    tokenizer_padding: max_length
+    max_seq_len: 276  # fixed 256 for image + max 20 for text
+    num_image_tokens: 256
+    image_size: [224, 224]

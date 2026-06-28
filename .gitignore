@@ -226,3 +226,4 @@ VLLM.md
 tmp/
 
 checkpoints/
+*.mp4
