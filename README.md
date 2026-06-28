@@ -1,9 +1,10 @@
 <!-- markdownlint-disable MD001 MD041 -->
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/yukki3421/yuepi0/main/docs/assets/logos/logo.png">
-    <img alt="YuePi0" src="https://raw.githubusercontent.com/yukki3421/yuepi0/main/docs/assets/logos/logo.png" width=55%>
-  </picture>
+  <img alt="YuePi0 — WidowX spoon on towel" src="docs/assets/deploy_widowx_spoon.gif" width=55%>
+</p>
+
+<p align="center">
+  <em>YuePi0 deployed in SimplerEnv — WidowX "put spoon on towel"</em>
 </p>
 
 <h3 align="center">
@@ -16,7 +17,9 @@ A from-scratch, study-driven re-implementation of π0 — the Physical Intellige
 
 ## About
 
-YuePi0 (月Pi0) is a hand-written re-implementation of [π0](https://www.physicalintelligence.company/blog/pi0) — Physical Intelligence's flow-matching Vision-Language-Action model. The project follows a deliberate "rebuild-from-fundamentals" pedagogy: each subsystem (RoPE, GQA, KV-Cache, SigLip, Gemma, Mixture-of-Transformers, Joint Attention, Action Expert, Flow Matching) is implemented in isolation, tested with `pytest`, and `allclose`-verified against the reference HuggingFace / open-pi-zero weights where possible.
+YuePi0 (月Pi0) is a hand-written re-implementation of [π0](https://www.physicalintelligence.company/blog/pi0) — Physical Intelligence's flow-matching Vision-Language-Action model. The project follows a deliberate "rebuild-from-fundamentals" pedagogy: each subsystem (RoPE, GQA, KV-Cache, SigLip, Gemma, Mixture-of-Transformers, Joint Attention, Action Expert, Flow Matching) is built in isolation, tested with `pytest`, and `allclose`-verified against the reference HuggingFace / `open-pi-zero` implementation.
+
+The full model is now **parameter-for-parameter compatible** with `open-pi-zero` (938 tensors, identical up to naming): an `open-pi-zero` checkpoint can be remapped and loaded directly, and the complete forward pass has been **numerically verified equivalent** via a two-process parity harness (max diff ~1e-8). The focus is now shifting from reproduction to deployment in simulation (SimplerEnv / WidowX).
 
 
 ## What's Implemented
@@ -40,10 +43,15 @@ YuePi0 (月Pi0) is a hand-written re-implementation of [π0](https://www.physica
 - Euler-integrator inference loop (image → proprio → action chunk)
 - adaLN / adaLN-Zero adaptive normalization for the action expert (selectable via `action_expert_adaptive_mode`)
 
+**Verification & loading**
+
+- Numerical parity (`allclose`) against `open-pi-zero` for the full forward pass (two-process harness, max diff ~1e-8)
+- Remap-and-load of pretrained `open-pi-zero` checkpoints into YuePi0
+
 **Roadmap (in progress)**
 
-- LeRobot dataset adapter & training script
-- Numerical parity (`allclose`) against `open-pi-zero` weights for the joint model
+- SimplerEnv / WidowX simulation deployment (`scripts/deploy_simpler.py` + env adapter)
+- LeRobot / Bridge dataset training loop (VLM frozen, bf16 action expert)
 - KV-cache enablement during multi-step Euler inference
 
 See the up-to-date checklist below.
@@ -60,8 +68,10 @@ See the up-to-date checklist below.
 - [x] Flow-Matching loss & sampler (σ_min schedule + Euler integrator)
 - [x] End-to-end forward / inference (`PiZero.forward` + `PiZero.infer_action`)
 - [x] adaLN / adaLN-Zero adaptive mode for action expert
-- [ ] Numerical parity vs `open-pi-zero` (joint model)
-- [ ] Training loop on a small LeRobot dataset
+- [x] Numerical parity vs `open-pi-zero` (full forward, diff ~1e-8)
+- [x] Load remapped `open-pi-zero` checkpoint into YuePi0
+- [ ] SimplerEnv / WidowX deployment loop
+- [ ] Training loop on the Bridge dataset
 
 ## Getting Started
 
@@ -98,7 +108,8 @@ pytest tests/model/vla/test_pizero.py           # end-to-end forward / inference
 
 ```
 src/model/
-├── kvcache.py                  # paged-free, simple per-layer KV cache
+├── kvcache.py                  # simple per-layer KV cache
+├── load_pretrained.py          # remap + load open-pi-zero checkpoints
 ├── paligemma/                  # vision-language backbone
 │   ├── vit.py                  # SigLip ViT
 │   ├── modules.py              # RMSNorm, RoPE, GQA, MLP
@@ -109,21 +120,38 @@ src/model/
     ├── joint_model.py          # cross-expert joint attention
     └── yuepi0.py               # top-level model
 
+src/agent/                      # training + deployment
+│   ├── train.py                # Bridge training entry (VLM frozen, bf16)
+│   └── env_adapter/            # SimplerEnv / WidowX adapters
+src/data/                       # Bridge / fake dataset loaders
+src/utils/geometry.py           # rotation / pose math for deployment
+
+scripts/                        # parity harness, inspection, deploy
 docs/                           # 中文学习笔记 (one per module)
 tests/                          # mirrors src/ layout
-config/yuepi0.yaml              # the single canonical config
+config/yuepi0.yaml              # the single canonical model config
 ```
 
 ## Design Notes
 
 The `docs/` directory carries Chinese-language study notes written alongside each module — they explain *why* the code looks the way it does, not just what it does:
 
+**Primitives & backbone**
+
 - [`rope_notes.md`](docs/rope_notes.md), [`rmsnorm_notes.md`](docs/rmsnorm_notes.md)
 - [`gqa_notes.md`](docs/gqa_notes.md), [`kv_cache_notes.md`](docs/kv_cache_notes.md)
-- [`vit_siglip_notes.md`](docs/vit_siglip_notes.md), [`paligemma_embedder_notes.md`](docs/paligemma_embedder_notes.md)
-- [`gemma_notes.md`](docs/gemma_notes.md)
+- [`vit_siglip_notes.md`](docs/vit_siglip_notes.md), [`paligemma_embedder_notes.md`](docs/paligemma_embedder_notes.md), [`gemma_notes.md`](docs/gemma_notes.md)
+
+**π0 composition**
+
 - [`processing_notes.md`](docs/processing_notes.md)
 - [`mixture_notes.md`](docs/mixture_notes.md), [`joint_model_notes.md`](docs/joint_model_notes.md), [`dispatcher_notes.md`](docs/dispatcher_notes.md)
+- [`flow_matching_and_sinusoidal_notes.md`](docs/flow_matching_and_sinusoidal_notes.md), [`pizero_inference_and_adaln_notes.md`](docs/pizero_inference_and_adaln_notes.md)
+
+**Weights, parity & training**
+
+- [`paligemma_weight_loading_notes.md`](docs/paligemma_weight_loading_notes.md), [`parity_test_notes.md`](docs/parity_test_notes.md)
+- [`bridge_dataset_notes.md`](docs/bridge_dataset_notes.md), [`phase1_paligemma_bf16_training_notes.md`](docs/phase1_paligemma_bf16_training_notes.md)
 
 ## Acknowledgements
 
