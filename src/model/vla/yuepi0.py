@@ -112,6 +112,8 @@ class PiZero(nn.Module):
         self.proprio_encoder = ProprioEncoder(config.proprio_dim, config.proprio_hidden_size)
         self.action_decoder = ActionDecoder(config.action_hidden_size, config.action_dim)
 
+        self.tie_action_proprio_weights()
+
     def forward(self, batch):
         '''
         batch:
@@ -249,3 +251,7 @@ class PiZero(nn.Module):
         action_position_ids = torch.arange(self.num_proprio_tokens+1, self.num_proprio_tokens+self.num_action_tokens+1,
                                            device=device ).expand(bsz, -1)
         return causal_mask, vlm_position_ids, proprio_position_ids, action_position_ids
+
+    def tie_action_proprio_weights(self):
+        """proprio 和 action 共享同一个动作专家的权重"""
+        self.joint.mixtures["proprio"] = self.joint.mixtures["action"]
