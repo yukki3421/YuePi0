@@ -49,7 +49,7 @@ def test_forward_mixture_attn_shape(mixtures):
         "action": torch.arange(T_act)[None].expand(B, -1),
     }
     mask = make_full_causal_mask(B, T_total)
-    out = forward_mixture_attn(mixtures, mask, pos, embeds, layer_idx=0)
+    out = forward_mixture_attn(mixtures, mask, pos, embeds, layer_idx=0, post_attn_skip_names=())
 
     assert out["vlm"].shape == (B, T_vlm, H)
     assert out["proprio"].shape == (B, T_prop, H)
@@ -74,7 +74,7 @@ def test_forward_mixture_layers_shape(mixtures):
         "action": torch.arange(T_act)[None].expand(B, -1),
     }
     mask = make_full_causal_mask(B, T_total)
-    out = forward_mixture_layers(mixtures, mask, pos, embeds, layer_idx=0)
+    out = forward_mixture_layers(mixtures, mask, pos, embeds, layer_idx=0, post_attn_skip_names=())
     assert out["vlm"].shape == (B, T_vlm, H)
     assert out["proprio"].shape == (B, T_prop, H)
     assert out["action"].shape == (B, T_act, H)
@@ -119,7 +119,7 @@ def test_joint_model_forward_shape():
     mask = make_full_causal_mask(B, T_total)
     mask = make_full_causal_mask(B, T_total)
 
-    out = model(mask, pos, embeds)
+    out = model(mask, pos, embeds, final_layer_post_attn_skip_names=())
 
     assert out["vlm"].shape == (B, T_vlm, H)
     assert out["proprio"].shape == (B, T_prop, H)
@@ -175,7 +175,7 @@ def test_joint_model_forward_with_different_hidden_sizes():
     }
     mask = make_full_causal_mask(B, T_total)
 
-    out = model(mask, pos, embeds)
+    out = model(mask, pos, embeds, final_layer_post_attn_skip_names=())
 
     assert out["vlm"].shape == (B, T_vlm, 256)
     assert out["proprio"].shape == (B, T_prop, 128)

@@ -63,3 +63,14 @@ def test_pizero_adaptive_modes(mode):
     actions = model.infer_action(_make_batch(cfg, B=1), num_inference_steps=2)
     assert actions.shape == (1, cfg.horizon_steps, cfg.action_dim)
     assert torch.isfinite(actions).all()
+
+
+def test_infer_action_cache_matches_naive():
+    cfg = _load_cfg()
+    model = PiZero(cfg).eval()
+    batch = _make_batch(cfg, B=1)
+    # 固定 noise
+    noise = torch.randn(1, cfg.horizon_steps, cfg.action_dim)
+    a_cache = model.infer_action(batch, num_inference_steps=3, noise=noise)
+    no_cache = model.infer_action_naive(batch, num_inference_steps=3, noise=noise)
+    assert torch.allclose(a_cache, no_cache, atol=1e-4)

@@ -1,8 +1,10 @@
+from typing import Optional, Tuple
+
 import torch
 from torch import nn
 import math
 from omegaconf import OmegaConf
-from typing import Optional
+
 from model.vla.mixture import Mixture
 from model.kvcache import KVCache
 
@@ -65,6 +67,7 @@ class JointModel(nn.Module):
         position_ids_all: dict[torch.Tensor],
         embeds_all: dict[torch.Tensor],
         time_cond: Optional[torch.FloatTensor] = None,
+        final_layer_post_attn_skip_names: Tuple[str, ...] = ("vlm", "proprio"),
         kv_caches: dict[KVCache] = None,
         cache_mode: str = "no_append",
         return_caches: bool = False,
@@ -90,6 +93,7 @@ class JointModel(nn.Module):
 
         # 2. layer
         for layer_idx in range(self.num_hidden_layers):
+            is_final_layer = layer_idx == self.num_hidden_layers - 1
             hidden_states = forward_mixture_layers(
                 mixtures = self.mixtures,
                 attention_mask = attention_mask,
@@ -99,11 +103,16 @@ class JointModel(nn.Module):
                 time_cond = time_cond,
                 kv_caches = kv_caches,
                 cache_mode = cache_mode,
+                post_attn_skip_names = final_layer_post_attn_skip_names if is_final_layer else [],
             )
         # 3. norm
         hidden_states_all = {}
         for name in active_mixture_names:
-            hidden_states_all[name] = self.mixtures[name].forward_norm( hidden_states[name], time_cond=time_cond)
+            if name not in final_layer_post_attn_skip_names:
+                hidden_states_all[name] = self.mixtures[name].forward_norm(
+                    hidden_states[name], time_cond=time_cond
+                    )
+
         if return_caches:
             return hidden_states_all, kv_caches
 
@@ -119,6 +128,7 @@ def forward_mixture_attn(
         position_ids_all: dict[torch.LongTensor], # 每个expert的position_ids
         embeds_all: dict[torch.FloatTensor],
         layer_idx: int,
+        post_attn_skip_names: Tuple[str, ...] = ("vlm", "proprio"),
         kv_caches: dict = {},
         cache_mode: str = "no_append", # 朴素推理/训练时, 不用kv cache
         attn_softclamp: float = 50.0,  # default in gemma
@@ -239,13 +249,16 @@ def forward_mixture_attn(
 
     attn_outputs_final = {}
     for name in active_mixture_names:
-        '''
-        利用Mixture的这个派发器
-        def attn_func(self, method_name:str, layer_idx:int, *args) -> torch.FloatTensor:
-            args = [arg for arg in args if arg is not None]
-            return getattr(self.layers[layer_idx].self_attn, method_name)(*args)
-        '''
-        attn_outputs_final[name] = mixtures[name].attn_func('forward_o_proj', layer_idx, attn_outputs[name])
+        if name in post_attn_skip_names:
+            attn_outputs_final[name] = None
+        else:
+            '''
+            利用Mixture的这个派发器
+            def attn_func(self, method_name:str, layer_idx:int, *args) -> torch.FloatTensor:
+                args = [arg for arg in args if arg is not None]
+                return getattr(self.layers[layer_idx].self_attn, method_name)(*args)
+            '''
+            attn_outputs_final[name] = mixtures[name].attn_func('forward_o_proj', layer_idx, attn_outputs[name])
     return attn_outputs_final
 
 
@@ -256,6 +269,7 @@ def forward_mixture_layers(
         position_ids_all: dict[torch.LongTensor],
         embeds_all: dict[torch.FloatTensor],
         layer_idx: int,
+        post_attn_skip_names: Tuple[str, ...] = ("vlm", "proprio"),
         time_cond: Optional[torch.FloatTensor] = None,
         kv_caches: dict[KVCache] = {},
         cache_mode: str = "no_append"
@@ -287,6 +301,7 @@ def forward_mixture_layers(
         position_ids_all = position_ids_all,
         embeds_all = hidden_states_pre_attn,
         layer_idx = layer_idx,
+        post_attn_skip_names = post_attn_skip_names,
         kv_caches = kv_caches,
         cache_mode = cache_mode,
         )
@@ -295,32 +310,42 @@ def forward_mixture_layers(
     # 3) 做残差连接: 先做adaptive_scale，再连接残差
     hidden_states_post_res = {}
     for name in active_mixture_names:
-        hidden_states_post_attn[name] = mixtures[name].layer_func(
-            "forward_adaptive_scale", layer_idx,
-            "post_attn", hidden_states_post_attn[name], time_cond,
-        )
-        hidden_states_post_res[name] = residuals_pre_attn[name] + hidden_states_post_attn[name]
+        if name in post_attn_skip_names:
+            hidden_states_post_res[name] = None
+        else:
+            hidden_states_post_attn[name] = mixtures[name].layer_func(
+                "forward_adaptive_scale", layer_idx,
+                "post_attn", hidden_states_post_attn[name], time_cond,
+            )
+            hidden_states_post_res[name] = residuals_pre_attn[name] + hidden_states_post_attn[name]
     residuals_pre_mlp = hidden_states_post_res
 
     # 4) 再做post_attn_layernorm + MLP
     hidden_states_post_norm = {}
     hidden_states_post_mlp = {}
     for name in active_mixture_names:
-        hidden_states_post_norm[name] = mixtures[name].layer_func(
-            "forward_norm", layer_idx, "post_attention_layernorm", hidden_states_post_res[name], time_cond,
-        )
-        hidden_states_post_mlp[name] = mixtures[name].layer_func(
-            "mlp", layer_idx, hidden_states_post_norm[name]
-        )
+        if name in post_attn_skip_names:
+            hidden_states_post_norm[name] = None
+            hidden_states_post_mlp[name] = None
+        else:
+            hidden_states_post_norm[name] = mixtures[name].layer_func(
+                "forward_norm", layer_idx, "post_attention_layernorm", hidden_states_post_res[name], time_cond,
+            )
+            hidden_states_post_mlp[name] = mixtures[name].layer_func(
+                "mlp", layer_idx, hidden_states_post_norm[name]
+            )
 
     # 5) 残差合并: 先把MLP的结果做一次adaptive_scale， 再连接残差
     hidden_states_final = {}
     for name in active_mixture_names:
-        hidden_states_post_mlp[name] = mixtures[name].layer_func(
-            "forward_adaptive_scale", layer_idx,
-            "final", hidden_states_post_mlp[name], time_cond
-        )
-        hidden_states_final[name] = residuals_pre_mlp[name] + hidden_states_post_mlp[name]
+        if name in post_attn_skip_names:
+            hidden_states_final[name] = None
+        else:
+            hidden_states_post_mlp[name] = mixtures[name].layer_func(
+                "forward_adaptive_scale", layer_idx,
+                "final", hidden_states_post_mlp[name], time_cond
+            )
+            hidden_states_final[name] = residuals_pre_mlp[name] + hidden_states_post_mlp[name]
 
     return hidden_states_final
 

@@ -111,6 +111,7 @@ def test_no_append_does_not_write_cache(mixtures, dummy_inputs):
         out = forward_mixture_attn(
             mixtures, mask, pos, embeds_all, layer_idx=0,
             kv_caches=None, cache_mode="no_append",
+            post_attn_skip_names=(),
         )
 
     # 1) 三个 mixture 都有输出
