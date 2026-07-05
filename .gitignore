@@ -227,3 +227,4 @@ tmp/
 
 checkpoints/
 *.mp4
+*.md

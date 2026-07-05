@@ -19,7 +19,7 @@ set -e  # 任一命令失败就退出
 cd "$(dirname "$0")/.."
 
 # 任务名: 取第一个参数, 没传则用默认
-TASK="${1:-widowx_spoon_on_towel}"
+TASK="${1:-widowx_stack_cube}"
 
 # 环境变量
 export CUDA_VISIBLE_DEVICES=1

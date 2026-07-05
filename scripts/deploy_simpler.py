@@ -15,7 +15,7 @@ YuePi0 在 SimplerEnv (bridge / widowx) 上的仿真部署脚本。
 说明:
 - env_adapter (BridgeSimplerAdapter) 已搬进本项目 src/agent/env_adapter, 负责 preprocess/postprocess/归一化
 - 模型用 YuePi0 + 已对拍验证数值等价的 load_pretrained_pizero 加载原版权重
-- 不用 KV cache, 不用 split mask: YuePi0.infer_action 内部自己 build mask + 采噪声
+- 用 KV cache 两阶段推理: infer_action 内部 prefill vlm+proprio 一次, 再循环 denoise action
 """
 import argparse
 import os
@@ -61,8 +61,10 @@ def main(args):
         instruction = env.get_language_instruction()
         print(f"[deploy] env={args.task} instruction={instruction!r}")
 
-        video_path = os.path.join(deploy_cfg.video_dir, f"{args.task}_ep{episode_id}.mp4")
-        video_writer = imageio.get_writer(video_path)
+        recording = episode_id < args.n_video
+        if recording:
+            video_path = os.path.join(deploy_cfg.video_dir, f"{args.task}_ep{episode_id}.mp4")
+            video_writer = imageio.get_writer(video_path)
 
         # preprocess → batch → 推理 → postprocess → 执行
         # 直到任务结束
@@ -83,13 +85,15 @@ def main(args):
             env_actions = adapter.postprocess(actions)
             for action in env_actions[: deploy_cfg.act_steps]:
                 obs, reward, success, truncated, info = env.step(action)
-                # 从当前 obs 取一帧画面（[H,W,3] 的图像数组） 追加进视频
-                video_writer.append_data(adapter.get_video_frame(env, obs))
+                if recording:
+                    # 从当前 obs 取一帧画面（[H,W,3] 的图像数组） 追加进视频
+                    video_writer.append_data(adapter.get_video_frame(env, obs))
                 if truncated:
                     break
-        video_writer.close()
+        if recording:
+            video_writer.close()
+            print(f"[episode {episode_id}] [deploy] video saved to {video_path}")
         successes.append(success)
-        print(f"[episode {episode_id}] [deploy] video saved to {video_path}")
         print(f"[deploy] done. success={success}")
     success_rate = np.mean(successes)
     print(f"[deploy] success_rate = {success_rate} ({sum(successes)}/{len(successes)})")
@@ -102,7 +106,8 @@ if __name__ == "__main__":
     # - widowx_spoon_on_towel（勺子放毛巾上）
     # - widowx_stack_cube（叠方块）
     parser.add_argument("--task", type=str, default="widowx_carrot_on_plate")
-    parser.add_argument("--n_eval_episode", type=int, default=4)
+    parser.add_argument("--n_eval_episode", type=int, default=240)
+    parser.add_argument("--n_video", type=int, default=4)
     args = parser.parse_args()
 
     np.random.seed(42)
