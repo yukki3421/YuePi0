@@ -52,20 +52,23 @@ mixture:
     rope_theta: 10000.0
     use_final_norm: False
     adaptive_mode: # vlm永远不用adaptive
-  
+    cache: True
+
   proprio:
     hidden_size: 1024
     intermediate_size: 4096
     rope_theta: ${action_expert_rope_theta}
     use_final_norm: True
     adaptive_mode: ${action_expert_adaptive_mode}
-  
+    cache: True
+
   action:
     hidden_size: 1024
     intermediate_size: 4096
     rope_theta: ${action_expert_rope_theta}
     use_final_norm: True
     adaptive_mode: ${action_expert_adaptive_mode}
+    cache: False
 
 joint:
   num_hidden_layers: 18

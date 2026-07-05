@@ -1,3 +1,5 @@
+from typing import Optional, Tuple
+
 import torch
 from torch import nn
 from omegaconf import OmegaConf
@@ -42,7 +44,7 @@ class PaliGemmaEmbedder(nn.Module):
             final_embedding: [B, seq_len, hidden]   一段同时含图、文、padding 的 embedding 序列
         """
     def forward(
-            self, 
+            self,
             input_ids: torch.LongTensor, # 有三类token: 图片占位符*256 + bos + 文本prompt产生的token + padding token
             pixel_values: torch.FloatTensor) -> torch.FloatTensor:
         dtype, device = pixel_values.dtype, pixel_values.device
@@ -78,7 +80,7 @@ class PaliGemmaEmbedder(nn.Module):
             image_indices = image_mask[i].nonzero(as_tuple=True)[0]
             num_image_token = len(image_indices)
             final_embedding[i, image_indices] = scaled_image_embeddings[i, :num_image_token]
-        # final_embedding[image_mask] = scaled_image_embeddings 
+        # final_embedding[image_mask] = scaled_image_embeddings
         return final_embedding
 
 class PiZero(nn.Module):
@@ -96,7 +98,7 @@ class PiZero(nn.Module):
         self.flow_sig_min = config.get("flow_sig_min", 0.001)
         self.adaptive_mode = config.action_expert_adaptive_mode
 
-        self.final_action_clip_value = config.get("final_action_clip_value", None)  
+        self.final_action_clip_value = config.get("final_action_clip_value", None)
         self.num_inference_steps = config.num_inference_steps # Flow Matching 推理时去噪的步数。10
 
         self.embedder = PaliGemmaEmbedder(config)
@@ -165,18 +167,13 @@ class PiZero(nn.Module):
         loss = torch.mean((v_pred - v_target) ** 2)
         return loss
 
+
     @torch.no_grad()
-    def infer_action(self, batch, num_inference_steps: int = 10, noise: torch.FloatTensor = None):
-        '''batch:                                                                                                                                                                                    
-          input_ids:      (B, max_image_text_tokens)   ← VLM 文本+图像占位
-          pixel_values:   (B, 3, 224, 224)             ← 图像                                                                                                                                   
-          attention_mask: (B, max_image_text_tokens)   ← padding mask                                                                                                                           
-          proprio:        (B, cond_steps, proprio_dim) ← 机器人当前状态                                                                                                                         
-      返回:                                                                                                                                                                                     
-          action_pred:    (B, horizon_steps, action_dim)'''
-        input_ids      = batch['input_ids']                                                                                                                                                       
-        pixel_values   = batch['pixel_values']                                                                                                                                                    
-        attention_mask = batch['attention_mask']                                                                                                                                                  
+    def infer_action_naive(self, batch, num_inference_steps: int= 10, noise: torch.FloatTensor = None):
+        '''朴素推理（不缓存 KV）：每步重跑 vlm+proprio+action 全套'''
+        input_ids      = batch['input_ids']
+        pixel_values   = batch['pixel_values']
+        attention_mask = batch['attention_mask']
         proprio        = batch['proprio']
 
         dtype = pixel_values.dtype
@@ -185,9 +182,8 @@ class PiZero(nn.Module):
         # 步骤1： 准备vlm_emb, mask, position_ids
         vlm_emb = self.embedder(input_ids, pixel_values)
         proprio_emb = self.proprio_encoder(proprio)
-        causal_mask, vlm_pos, proprio_pos, action_pos = self.build_mask_and_position_ids(attention_mask, dtype) 
-        position_ids_all = {'vlm': vlm_pos, "proprio": proprio_pos, "action": action_pos}
-        embeds_all = {'vlm': vlm_emb.clone(), 'proprio': proprio_emb.clone()}
+        total_mask, vlm_pos, proprio_pos, action_pos = self.build_mask_and_position_ids(attention_mask, dtype)
+
         # 步骤2：从纯噪声出发
         if noise is None:
             x = torch.randn(B, self.num_action_tokens, self.action_dim, device=device, dtype=dtype)
@@ -203,31 +199,121 @@ class PiZero(nn.Module):
                 action_emb = self.action_encoder(x)
             else:
                 action_emb = self.action_encoder(x, time_emb)
-            embeds_all['action'] = action_emb.clone()
+
             # 拿到当前位置的速度场
-            out = self.joint(causal_mask, position_ids_all, embeds_all, time_cond=time_emb if self.adaptive_mode else None)
+            out = self.joint(
+                attention_mask = total_mask,
+                position_ids_all = {'vlm': vlm_pos, 'proprio': proprio_pos, 'action': action_pos},
+                embeds_all = {'vlm': vlm_emb, 'proprio': proprio_emb, 'action': action_emb},
+                time_cond=time_emb if self.adaptive_mode else None,
+                kv_caches = None,
+                cache_mode = "no_append",
+                )
+
             v = self.action_decoder(out['action'])
-            # Euler 
+            # Euler
             x = x + dt * v
             t = t + dt
-        if self.final_action_clip_value is not None:                                                                                                     
+        if self.final_action_clip_value is not None:
             x = torch.clamp(
                 x,
                 -self.final_action_clip_value,
                 self.final_action_clip_value,
-            )                                                                                                                                            
+            )
+        return x
+
+    @torch.no_grad()
+    def infer_action(self, batch, num_inference_steps: int = 10, noise: torch.FloatTensor = None):
+        '''batch:
+          input_ids:      (B, max_image_text_tokens)   ← VLM 文本+图像占位
+          pixel_values:   (B, 3, 224, 224)             ← 图像
+          attention_mask: (B, max_image_text_tokens)   ← padding mask
+          proprio:        (B, cond_steps, proprio_dim) ← 机器人当前状态
+      返回:
+          action_pred:    (B, horizon_steps, action_dim)'''
+        input_ids      = batch['input_ids']
+        pixel_values   = batch['pixel_values']
+        attention_mask = batch['attention_mask']
+        proprio        = batch['proprio']
+
+        dtype = pixel_values.dtype
+        device = pixel_values.device
+        B = pixel_values.shape[0]
+        # 步骤1： 准备vlm_emb, mask, position_ids
+        vlm_emb = self.embedder(input_ids, pixel_values)
+        proprio_emb = self.proprio_encoder(proprio)
+        total_mask, vlm_pos, proprio_pos, action_pos = self.build_mask_and_position_ids(attention_mask, dtype)
+        # 拆分mask
+        vlm_proprio_mask, action_mask = self.split_full_mask_into_submask(causal_mask=total_mask)
+        kv_caches = self.joint.build_mixture_caches() # 创建KV Cache
+
+        # 阶段1： prefill
+        # vlm expert 和 proprio expert的输出不需要, 用_来接收
+        if self.adaptive_mode:
+            time_emb_prefill = self.time_encoder(torch.zeros(B, device=device, dtype=dtype))
+        else:
+            time_emb_prefill = None
+
+        _, kv_caches = self.joint(
+            attention_mask = vlm_proprio_mask,
+            position_ids_all = {'vlm': vlm_pos, 'proprio': proprio_pos},
+            embeds_all = {'vlm': vlm_emb.clone(), 'proprio': proprio_emb.clone()},
+            time_cond = time_emb_prefill,
+            kv_caches = kv_caches,
+            # cache_mode = "no_append",
+            return_caches = True,
+        )
+
+        # 阶段2： denoise 循环
+        position_ids_all = {"action": action_pos}
+        # 步骤2：从纯噪声出发
+        if noise is None:
+            x = torch.randn(B, self.num_action_tokens, self.action_dim, device=device, dtype=dtype)
+        else:
+            x = noise.to(device=device, dtype=dtype).clone()
+        # 步骤3：欧拉积分
+        dt = 1.0 / num_inference_steps
+        t = torch.zeros(B, device=device, dtype=dtype)
+        for _ in range(num_inference_steps):
+            # 编码当前x 和 t
+            time_emb = self.time_encoder(t)
+            if self.adaptive_mode:
+                action_emb = self.action_encoder(x)
+            else:
+                action_emb = self.action_encoder(x, time_emb)
+
+            # 拿到当前位置的速度场
+            out = self.joint(
+                attention_mask = action_mask,
+                position_ids_all = {'action': action_pos},
+                embeds_all = {'action': action_emb.clone()},
+                time_cond=time_emb if self.adaptive_mode else None,
+                kv_caches = kv_caches,
+                cache_mode = "append_non_active",
+                )
+
+            v = self.action_decoder(out['action'])
+            # Euler
+            x = x + dt * v
+            t = t + dt
+        if self.final_action_clip_value is not None:
+            x = torch.clamp(
+                x,
+                -self.final_action_clip_value,
+                self.final_action_clip_value,
+            )
         return x
 
     def build_mask_and_position_ids(self, attention_mask, dtype:torch.dtype):
         bsz = attention_mask.shape[0]
         device = attention_mask.device
-        proprio_start = self.max_image_text_tokens 
+        proprio_start = self.max_image_text_tokens
         action_start = self.max_image_text_tokens + self.num_proprio_tokens
         # 每个batch实际有效的image/text token数量
         valid_image_text_token = torch.sum(attention_mask, dim=-1)
 
         mask_pre = torch.full(
-            (bsz, self.total_num_tokens, self.total_num_tokens), torch.finfo(dtype).min, 
+            (bsz, self.total_num_tokens, self.total_num_tokens), torch.finfo(dtype).min,
             dtype=dtype, device=device)
         for idx, cnt in enumerate(valid_image_text_token):
             # 有效image/text token内部相互可见
@@ -240,7 +326,7 @@ class PiZero(nn.Module):
         # action可以看proprio
         mask_pre[:, action_start:, proprio_start:] = 0
         # 加head 维, [B, T_total, T_total] -> [B, 1, T_total, T_total]
-        causal_mask = mask_pre.unsqueeze(1) 
+        causal_mask = mask_pre.unsqueeze(1)
 
         # 位置编码id: 每段都从1开始, 方便和RoPE配合
         vlm_position_ids = torch.arange(1, self.max_image_text_tokens+1, device=device).expand(bsz, -1)
@@ -252,6 +338,121 @@ class PiZero(nn.Module):
                                            device=device ).expand(bsz, -1)
         return causal_mask, vlm_position_ids, proprio_position_ids, action_position_ids
 
+    def split_full_mask_into_submask(
+            self,
+            causal_mask: torch.FloatTensor
+        ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+        '''
+        - prefill 时 active 只有 vlm+proprio，Q 和 K/V 都只到 vlm+proprio 那段 →
+        需要左上的 [vlm+proprio, vlm+proprio] 子方块
+        - denoise 时 Q 是 action 那 num_action_tokens 行，
+        但 K/V 要全长（vlm+proprio 从 cache 来 + action 当步算）→ 需要最后
+
+        把完整 mask 切成两块，用于 infer_action 的「先跑 VLM+proprio 缓存 KV，再循环跑 action」流程。
+
+        输入  causal_mask:                 [B, 1, total_tokens, total_tokens]
+        输出:
+            image_text_proprio_mask:       [B, 1, vlm+proprio, vlm+proprio]    —— 推理第一阶段，prefill 用
+            action_mask:                   [B, 1, num_action_tokens, total]    —— 推理第二阶段，每个去噪步用
+                                                                                 (Q 只取 action 那几行，K/V 是全长)
+        '''
+        iamge_text_proprio_mask = causal_mask[
+            ...,
+            : self.max_image_text_tokens + self.num_proprio_tokens,
+            : self.max_image_text_tokens + self.num_proprio_tokens,
+        ]
+        action_mask = causal_mask[..., -self.num_action_tokens :, :]
+        return iamge_text_proprio_mask, action_mask
+
     def tie_action_proprio_weights(self):
         """proprio 和 action 共享同一个动作专家的权重"""
         self.joint.mixtures["proprio"] = self.joint.mixtures["action"]
+
+
+if __name__ == "__main__":
+    import time
+    from PIL import Image
+    import numpy as np
+    from transformers import AutoTokenizer
+
+    from model.vla.processing import VLAPreProcessor
+    from model.load_pretrained import load_pretrained_pizero
+
+    config = OmegaConf.load("config/yuepi0.yaml")
+    deploy_cfg = OmegaConf.load("config/deploy_simpler.yaml")
+
+    device = torch.device("cuda:0")
+    dtype = torch.bfloat16
+
+    ckpt = deploy_cfg.checkpoint_path
+    model = load_pretrained_pizero(config, ckpt, strict=True)
+    model.to(dtype).to(device).eval()
+
+    print(f"Using {device} and {dtype}...")
+
+    # dummy image --- replace the first image with a real one
+    bsz = 1
+    # 随机噪声图
+    dummy_images = torch.randint(
+        0, 256, (bsz, 3, 224, 224), dtype=torch.uint8
+    )  # not used if text_only
+    real_image_path = "/home/cxy/projects/open-pi-zero/media/maniskill_pp.png"
+    real_image = Image.open(real_image_path).convert("RGB")
+    real_image_t = torch.as_tensor(
+        np.array(real_image.resize((224, 224))).transpose(2, 0, 1)
+    )
+    dummy_images[0] = real_image_t
+
+    # 输入指令文本
+    # text and proprio,
+    dummy_texts = [
+        "this image shows ",
+        "this is a nice portrait of London because ",
+    ][:bsz]
+    dummy_proprio = torch.rand(bsz, config.cond_steps, config.action_dim)
+
+
+    tokenizer = AutoTokenizer.from_pretrained(config.pretrained_model_path, padding_side="right")
+
+    processor = VLAPreProcessor(tokenizer=tokenizer,
+                    num_image_token=config.vision_config.num_image_tokens,
+                    max_seq_len=config.max_seq_len)
+
+    # process image and text
+    model_inputs = processor(prompts=dummy_texts, images=dummy_images)
+    input_ids = model_inputs['input_ids']
+    image_text_attention_mask = model_inputs['attention_mask']
+    pixel_values = model_inputs['pixel_values'].to(dtype)
+
+    # 推理
+    start_time = time.time()
+
+    # 把输入移到 device + dtype
+    batch = {
+        "input_ids":      input_ids.to(device),
+        "pixel_values":   pixel_values.to(device),
+        "attention_mask": image_text_attention_mask.to(device),
+        "proprio":        dummy_proprio.to(dtype).to(device),
+    }
+
+    # 固定 noise（对拍时两版必须用同一个 noise 才能比）
+    torch.manual_seed(42)
+    noise = torch.randn(
+        bsz, config.horizon_steps, config.action_dim,
+        device=device, dtype=dtype,
+    )
+
+    # 跑 cache 版推理
+    actions = model.infer_action(batch, num_inference_steps=10, noise=noise)
+
+    print("\n=========================")
+    print("action shape:", actions.shape)
+    print("action values:", actions)
+    print("Time taken:", time.time() - start_time)
+    print("=========================\n")
+
+
+    # 朴素版对拍（同一个 noise）
+    actions_naive = model.infer_action_naive(batch, num_inference_steps=10, noise=noise)
+    print("naive action shape:", actions_naive.shape)
+    print("max diff (cache vs naive):", (actions - actions_naive).abs().max())

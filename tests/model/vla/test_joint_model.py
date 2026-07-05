@@ -15,6 +15,7 @@ class FakeConfig:
     rms_norm_eps = 1e-6
     attention_bias = False
     use_final_norm = True
+    cache = False
 
 @pytest.fixture
 def mixtures():
@@ -139,6 +140,7 @@ class SmallHiddenConfig:
     rms_norm_eps = 1e-6
     attention_bias = False
     use_final_norm = True
+    cache = False
 
 class FakeJointConfigMixedHidden:
     num_hidden_layers = 3
