@@ -80,6 +80,14 @@ See the up-to-date checklist below.
 
 This shared-attention design is the core of π0's Mixture-of-Transformers: it lets the lightweight action expert (~311M params) borrow grounding from the much larger VLM backbone (~1.98B params) without a separate cross-attention bridge.
 
+<p align="center">
+  <img alt="Action expert encoders and decoder flow" src="docs/assets/action_state_encoder.jpg" width=58%>
+</p>
+
+<p align="center">
+  <em>Action expert encoders & decoder — time, proprio, and noisy-action inputs in; predicted flow velocity out</em>
+</p>
+
 ## Reproduction Progress
 
 - [x] VLAPreProcessor
