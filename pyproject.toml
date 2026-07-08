@@ -19,6 +19,8 @@ dependencies = [
     "pre-commit>=4.0.1",
     "pretty_errors",
     "protobuf==3.20.3",
+    # sapien imports pkg_resources, which setuptools>=81 removed; pin <81.
+    "setuptools<81",
     "tensorflow==2.15.0",
     "tensorflow_datasets==4.9.2",
     "torch==2.5.0",
@@ -30,7 +32,7 @@ dependencies = [
 ]
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61,<81"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
