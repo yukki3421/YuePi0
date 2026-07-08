@@ -114,9 +114,12 @@ class PiZero(nn.Module):
         self.proprio_encoder = ProprioEncoder(config.proprio_dim, config.proprio_hidden_size)
         self.action_decoder = ActionDecoder(config.action_hidden_size, config.action_dim)
 
-        self.tie_action_proprio_weights()
+        self.tie_action_proprio_weights() # 让proprio专家 action专家共享权重
 
-    def forward(self, batch):
+    def forward(self, 
+        batch: dict[torch.Tensor],
+        t: torch.FloatTensor
+    ):
         '''
         batch:
             input_ids:    (B, L_text)
@@ -137,11 +140,9 @@ class PiZero(nn.Module):
 
         # 步骤2： FM采样
         B, T_a, A = action.shape
-        t = torch.rand(B, device=action.device, dtype=action.dtype) # 生成均匀分布(0, 1)之间的随机数, 正好是Flow Matching所需要的
+        # t = torch.rand(B, device=action.device, dtype=action.dtype) # 生成均匀分布(0, 1)之间的随机数, 正好是Flow Matching所需要的
         noise = torch.randn_like(action)
-        t_b = t[:, None, None]
-        sig = self.flow_sig_min
-        x_t = (1 - (1-sig) * t_b) * noise + t_b * action # 1024
+        x_t = self.psi_t(noise, action, t)
 
         # 步骤3：t embeddig + atciont(x_t) embedding
         time_emb = self.time_encoder(t) # 256
@@ -162,8 +163,8 @@ class PiZero(nn.Module):
         # 步骤6：action_expert -> 预测速度
         v_pred = self.action_decoder(out['action'])
 
-        # 步骤7： FM Loss
-        v_target = action - (1-sig) * noise # 真实速度场, 先用最简单的x_t = (1-t)*x_0 + t*x_1
+        # 7） FM Loss: 真实速度场 d_psi = x1 - (1 - sig_min) * x0
+        v_target = action - (1 - self.flow_sig_min) * noise
         loss = torch.mean((v_pred - v_target) ** 2)
         return loss
 
@@ -368,6 +369,13 @@ class PiZero(nn.Module):
         """proprio 和 action 共享同一个动作专家的权重"""
         self.joint.mixtures["proprio"] = self.joint.mixtures["action"]
 
+    def psi_t(self, 
+        x_0: torch.FloatTensor,
+        x_1: torch.FloatTensor, 
+        t: torch.FloatTensor
+    ) -> torch.FloatTensor:
+        t = t[:, None, None]
+        return (1 - (1 - self.flow_sig_min) * t) * x_0 + t * x_1
 
 if __name__ == "__main__":
     import time

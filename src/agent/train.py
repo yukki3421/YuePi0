@@ -1,5 +1,6 @@
 import sys, time
 from pathlib import Path
+from collections import deque 
 
 import torch
 from torch.utils.data import DataLoader  
@@ -11,6 +12,7 @@ from data.bridge_dataset import BridgeDataset
 from model.vla.processing import VLAPreProcessor                                                                                                     
 from model.vla.yuepi0 import PiZero 
 from model.utils import load_paligemma_weights, to_device_bf16
+from utils.optim import WarmupCosineScheduler
 
 def preprocess_batch(raw_batch, processor):
     # 1) 取出raw_batch里的字段
@@ -62,74 +64,155 @@ def freeze_vlm(model):
 
     return trainable_params, n_total, n_trainable
 
+class TrainAgent:
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.gpu_id = cfg.gpu_id
+        self.device = torch.device(f"cuda:{self.gpu_id}")
+        self.flow_sampling = cfg.flow_sampling
+        if self.flow_sampling == "beta":
+            flow_alpha = cfg.get("flow_alpha", 1.5)
+            flow_beta = cfg.get("flow_beta", 1)
+            self.flow_t_max = 1 - cfg.get("flow_sig_min", 0.001)
+            self.flow_beta_dist = torch.distributions.Beta(flow_alpha, flow_beta)
+
+        # 训练超参
+        self.n_updates = int(cfg.n_updates)
+        self.max_grad_norm = cfg.max_grad_norm # 梯度裁剪阈值
+        self.use_amp = cfg.get("use_amp", True) # 是否启用autocast 自动混合精度
+        self.dtype = torch.bfloat16 if cfg.get("use_bf16", True) else torch.float32
+        self.use_torch_compile = cfg.get("use_torch_compile", True) 
+
+        # 梯度累积
+        world_size = 1 # 单卡
+        # config 里global_batch_size=1024、batch_size=2, 每攒 512 个小 batch 才更新一次
+        self.grad_accumulation_steps = max(cfg.global_batch_size // cfg.batch_size // world_size, 1)
+        actual_global_batch_size = cfg.batch_size * self.grad_accumulation_steps * world_size
+        print(f"grad_accumulation_steps = {self.grad_accumulation_steps}"                                      
+                f"(per_device={cfg.batch_size}, global={actual_global_batch_size})")
+        
+        #  self.model = PiZero + load_paligemma + to(bf16) + freeze_vlm
+        self.model = PiZero(cfg)
+        if cfg.load_pretrained_weights:
+            load_paligemma_weights(self.model, Path(cfg.pretrained_model_path))
+        elif cfg.resume_checkpoint_path: # 从断点恢复
+            self.load_checkpoint(cfg.resume_checkpoint_path)
+        self.model = self.model.to(self.dtype).to(self.device)
+        trainable_params, n_total, n_trainable = freeze_vlm(self.model) # 冻结vlm, 只训 action expert
+
+        if self.use_torch_compile:
+            self.model = torch.compile(
+                self.model, mode="default"
+            )
+        # data loader
+        # 2.创建dataset + dataloader
+        dataset = BridgeDataset(cfg, cfg.data_dir, cfg.max_episodes)
+        self.data_loader = DataLoader(dataset, batch_size=cfg.batch_size, shuffle=True)
+
+        # 3.创建tokenizer + processor
+        self.tokenizer = AutoTokenizer.from_pretrained(cfg.pretrained_model_path, padding_side="right")
+        self.processor = VLAPreProcessor(tokenizer=self.tokenizer, num_image_token=cfg.vision_config.num_image_tokens, max_seq_len=cfg.max_seq_len)
+        self.optimizer = torch.optim.AdamW(trainable_params, lr=cfg.lr)
+
+        self.scheduler = WarmupCosineScheduler(
+            self.optimizer, 
+            warmup_steps=cfg.lr_scheduler.warmup_steps,
+            total_steps=self.n_updates,
+            max_lr = cfg.lr,
+            min_lr=cfg.lr_scheduler.min_lr)
+
+        self.eval_freq = cfg.eval_freq
+        # 留一个固定 batch 做 eval: 每次用同一包, L1 变化只反映模型权重变化
+        # 注意: 真正复现要用独立 val split, 这里简化成复用训练数据 (偏乐观)         
+        self.eval_batch = next(iter(self.data_loader)) 
+
+    def run(self):
+        self.model.train()
+        loader_iter = iter(self.data_loader)
+
+        # 滑动窗口: 存最近 grad_accumulation_steps 个 batch 的 loss, 用于平滑显示                                                             
+        loss_deque = deque(maxlen=self.grad_accumulation_steps)
+        cnt_batch = 0 # 数据 batch 计数: 每取一个 batch +1    
+        cnt_update = 0 # # 优化器更新计数: 每攒满 grad_accumulation_steps 个 batch 才 +1            
+
+        start_time = time.time()
+        while cnt_update < self.n_updates:
+            # 1. 取一个batch
+            try:
+                raw_batch = next(loader_iter)
+            except StopIteration:
+                loader_iter = iter(self.data_loader) # 数据用完了, 重新开始
+                raw_batch = next(loader_iter)   
+            # 2. raw -> model输入
+            inputs = preprocess_batch(raw_batch=raw_batch, processor=self.processor)
+            # 3. 搬到device
+            inputs = to_device_bf16(inputs=inputs, device=self.device)
+            # 4. forward
+            bsz = inputs['input_ids'].shape[0]
+            t = self.sample_flow_matching_time(bsz).to(self.device).to(self.dtype)
+            loss = self.model(inputs, t)
+            # 5. loss归一化 backward + step 
+            normalized_loss = loss / self.grad_accumulation_steps
+            normalized_loss.backward()
+            loss_deque.append(loss.item())
+
+            # 6.只在累积窗口末尾做clip + step + zero
+            if (cnt_batch + 1) % self.grad_accumulation_steps == 0:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), max_norm=self.max_grad_norm
+                )
+                self.optimizer.step()
+                self.scheduler.step()
+                self.optimizer.zero_grad(set_to_none=True)
+                cnt_update += 1
+                if cnt_update % self.eval_freq == 0:                                
+                    eval_l1 = self.evaluate()
+                    print(f"  [eval] update {cnt_update}  L1 = {eval_l1:.4f}")  
+                    
+                if cnt_update % self.cfg.log_every == 0:
+                    avg = sum(loss_deque) / len(loss_deque)
+                    lr = self.optimizer.param_groups[0]["lr"]
+                    print(f"update {cnt_update:4d}/{self.n_updates}  batch {cnt_batch}  "
+                            f"loss = {avg:.6f}  grad = {grad_norm.item():.3f}  lr = {lr:.2e}")
+            cnt_batch += 1
+
+        end_time = time.time()
+        print("Spend time: ", end_time - start_time)
+        
+        # 7. 保存 checkpoint (只存可训练的部分够推理用, 这里简单起见整模型都存)
+        ckpt_dir = Path("checkpoints")
+        ckpt_dir.mkdir(exist_ok=True)
+        ckpt_path = ckpt_dir / "yuepi0_bridge.pt"
+        torch.save(self.model.state_dict(), ckpt_path)
+        print(f"saved checkpoint to {ckpt_path}")
+
+    def evaluate(self):
+        self.model.eval()
+        with torch.no_grad():
+            inputs = preprocess_batch(raw_batch=self.eval_batch, processor=self.processor)
+            gt = inputs['action']
+            pred = self.model.infer_action(inputs, num_inference_steps=self.cfg.num_inference_steps)
+            l1 = (pred - gt).abs().mean()
+            self.model.train()                                                          
+        return l1.item() 
+    
+    def sample_flow_matching_time(self, bsz: int) -> torch.FloatTensor:
+        if self.flow_sampling == "beta":
+            z = self.flow_beta_dist.sample((bsz, ))
+            t = self.flow_t_max * (1 -z) 
+        elif self.flow_sampling == "uniform":
+            eps = 1e-5
+            t = (torch.rand(1) + torch.arange(bsz) / bsz) % ( 1 - eps)
+        return t
+
+    def load_checkpoint(self, path: str):
+        pass
 
 def main():
-    # 1.加载配置
     config = OmegaConf.load("config/realdataTrain.yaml")
     OmegaConf.resolve(config)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # 2.创建dataset + dataloader
-    dataset = BridgeDataset(config, config.data_dir, config.max_episodes)
-    loader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True)
-
-    # 3.创建tokenizer + processor
-    tokenizer = AutoTokenizer.from_pretrained(config.pretrained_model_path, padding_side="right")
-    processor = VLAPreProcessor(tokenizer=tokenizer, num_image_token=config.vision_config.num_image_tokens, max_seq_len=config.max_seq_len)
-
-    # 4.创建 model + optimizer, 加载预训练权重
-    model = PiZero(config)
-    load_paligemma_weights(model, Path(config.pretrained_model_path))
-    model = model.to(torch.bfloat16).to(device)
-    trainable_params, n_total, n_trainable = freeze_vlm(model)
-
-    optimizer = torch.optim.AdamW(trainable_params, lr=config.lr)   
-    # === 显存自检 ===                                                                                                                               
-    torch.cuda.synchronize()
-    mem_gb = torch.cuda.memory_allocated() / 1e9
-    print(f"GPU memory after model+optimizer setup: {mem_gb:.2f} GB")  
-    
-    model.train()
-    loader_iter = iter(loader)
-    start_time = time.time()
-
-    loss_history = []
-    step = 0
-    while step < config.num_steps:
-        # 1. 取一个batch
-        try:
-            raw_batch = next(loader_iter)
-        except StopIteration:
-            loader_iter = iter(loader) # 数据用完了, 重新开始
-            raw_batch = next(loader_iter)   
-        # 2. raw -> model输入
-        inputs = preprocess_batch(raw_batch=raw_batch, processor=processor)
-        # 3. 搬到device
-        inputs = to_device_bf16(inputs=inputs, device=device)
-        # 4. forward
-        loss = model(inputs)
-        # 5. backward + step 
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-        # 5. log
-        loss_history.append(loss.item())
-        if step % config.log_every == 0:
-            recent = loss_history[-50:]
-            avg = sum(recent) / len(recent)
-            print(f"step {step:4d}/{config.num_steps}  loss = {loss.item():.6f}  avg50 = {avg:.6f}  grad = {grad_norm.item():.3f}")
-        step += 1
-    end_time = time.time()
-    print("Spend time: ", end_time - start_time)
-
-    # 6. 保存 checkpoint (只存可训练的部分够推理用, 这里简单起见整模型都存)
-    ckpt_dir = Path("checkpoints")
-    ckpt_dir.mkdir(exist_ok=True)
-    ckpt_path = ckpt_dir / "yuepi0_bridge.pt"
-    torch.save(model.state_dict(), ckpt_path)
-    print(f"saved checkpoint to {ckpt_path}")
-
+    agent = TrainAgent(config)
+    agent.run()
    
 
 if __name__ == "__main__":
