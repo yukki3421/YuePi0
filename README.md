@@ -53,6 +53,14 @@ See the up-to-date checklist below.
 ## Architecture
 
 <p align="center">
+  <img alt="Action expert encoders and decoder flow" src="docs/assets/action_state_encoder.jpg" width=58%>
+</p>
+
+<p align="center">
+  <em>Action expert encoders & decoder — time, proprio, and noisy-action inputs in; predicted flow velocity out</em>
+</p>
+
+<p align="center">
   <img alt="SigLip ViT — image encoder forward flow" src="docs/assets/vit-process-1.png" width=58%>
 </p>
 
@@ -79,14 +87,6 @@ See the up-to-date checklist below.
 7. **RMSNorm → MLP → residual** — per-expert feed-forward block, then into the next layer
 
 This shared-attention design is the core of π0's Mixture-of-Transformers: it lets the lightweight action expert (~311M params) borrow grounding from the much larger VLM backbone (~1.98B params) without a separate cross-attention bridge.
-
-<p align="center">
-  <img alt="Action expert encoders and decoder flow" src="docs/assets/action_state_encoder.jpg" width=58%>
-</p>
-
-<p align="center">
-  <em>Action expert encoders & decoder — time, proprio, and noisy-action inputs in; predicted flow velocity out</em>
-</p>
 
 ## Reproduction Progress
 
