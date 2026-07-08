@@ -12,7 +12,7 @@ from transformers import AutoTokenizer
 from data.fake_dataset import FakeBridgeDataset                                                                                                      
 from model.vla.processing import VLAPreProcessor                                                                                                     
 from model.vla.yuepi0 import PiZero                                                                                                                  
-from scripts.load_paligemma import load_paligemma_weights  # 复用你刚写的                                                                            
+from model.utils import load_paligemma_weights  # 复用你刚写的                                                                            
                                                                                                                                                     
                                                                                                                                                     
 def main():                                                                                                                                          

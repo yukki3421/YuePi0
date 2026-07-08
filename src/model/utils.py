@@ -36,18 +36,29 @@ from pathlib import Path
 from safetensors import safe_open
                                                                                                                                                     
                                                                                                                                                     
-def hf_key_to_yuepi0_key(hf_key: str) -> str | None:                                                                                                 
-    """HF 的一个 key → YuePi0 的 key。None 表示该 key 丢弃。"""                                                                                      
+def hf_key_to_yuepi0_key(hf_key: str) -> str | None:
+    """把 HF 的一个 key 转成 YuePi0 的 key。None 表示丢弃。"""                                                                                       
+    # 规则 1: embed_tokens                                                                                                                           
     if hf_key == "language_model.model.embed_tokens.weight":                                                                                         
         return "embedder.embed_tokens.weight"                                                                                                        
+                                                                                                                                                    
+    # 规则 2: language_model.model.layers.[i].* → joint.mixtures.vlm.layers.[i].*                                                                    
     if hf_key.startswith("language_model.model.layers."):                                                                                            
         return hf_key.replace("language_model.model", "joint.mixtures.vlm")                                                                          
+                                                                                                                                                    
+    # 规则 3: 丢弃最后那个 norm
     if hf_key == "language_model.model.norm.weight":                                                                                                 
-        return None                                                                                                                                  
-    if hf_key.startswith("multi_modal_projector."):                                                                                                  
+        return None
+
+    # 规则 4: multi_modal_projector 前缀替换
+    if hf_key.startswith("multi_modal_projector."):
         return "embedder." + hf_key                                                                                                                  
+
+    # 规则 5: vision_tower 前缀替换                                                                                                                  
     if hf_key.startswith("vision_tower."):
         return "embedder." + hf_key                                                                                                                  
+                
+    # 不该出现的 key                                                                                                                                 
     raise ValueError(f"Unmapped HF key: {hf_key}")
                                                                                                                                                     
                                                                                                                                                     
@@ -86,3 +97,37 @@ def to_device_bf16(inputs: dict, device) -> dict:
             v = v.to(torch.bfloat16)
         out[k] = v
     return out
+
+
+if __name__ == "__main__":
+    """把 HF PaliGemma 权重映射加载到 YuePi0 PiZero。"""
+    from pathlib import Path                                                                                                                             
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))                                                                                 
+                                                                                                                                                        
+    import torch
+    from omegaconf import OmegaConf                                                                                                                      
+    from safetensors import safe_open
+    from model.vla.yuepi0 import PiZero    
+
+    HF_PATH = Path.home() / ".cache/huggingface/hub/paligemma-3b-pt-224"
+                                                                                                                                                    
+    config = OmegaConf.load("config/yuepi0.yaml")
+    OmegaConf.resolve(config)                                                                                                                        
+    model = PiZero(config)   # 注意:不要 meta 设备,我们要真填权重                                                                                    
+                                                                                                                                                    
+    stats = load_paligemma_weights(model, HF_PATH)                                                                                                   
+    print(f"loaded:  {len(stats['loaded'])}")                                                                                                        
+    print(f"skipped: {len(stats['skipped'])}  {stats['skipped']}")                                                                                   
+    print(f"shape mismatches: {len(stats['shape_mismatch'])}")                                                                                       
+    for k, s1, s2 in stats['shape_mismatch']:                                                                                                        
+        print(f"  {k}: model={s1} hf={s2}")                                                                                                          
+                                                                                                                                                    
+    # 验证: PiZero 里**没**被加载的 key 有哪些 (应该是 proprio/action expert + encoders)                                                             
+    loaded_set = set(stats['loaded'])                                                                                                                
+    unloaded = [k for k in model.state_dict() if k not in loaded_set]                                                                                
+    print(f"\nunloaded (随机初始化): {len(unloaded)} 个")
+    for k in unloaded[:5]:                                                                                                                           
+        print(f"  {k}")
+    if len(unloaded) > 5:
+        print(f"  ... 还有 {len(unloaded)-5} 个")
