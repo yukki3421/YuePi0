@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD001 MD041 -->
 <p align="center">
-  <img alt="YuePi0 — WidowX spoon on towel" src="docs/assets/deploy_widowx_spoon.gif" width=55%>
+  <img alt="YuePi0 - WidowX spoon on towel" src="https://cdn.jsdelivr.net/gh/yukki3421/YuePi0@main/docs/assets/deploy_widowx_spoon.gif" width=55%>
 </p>
 
 <p align="center">
@@ -53,7 +53,7 @@ See the up-to-date checklist below.
 ## Architecture
 
 <p align="center">
-  <img alt="Action expert encoders and decoder flow" src="docs/assets/action_state_encoder.jpg" width=58%>
+  <img alt="Action expert encoders and decoder flow" src="https://cdn.jsdelivr.net/gh/yukki3421/YuePi0@main/docs/assets/action_state_encoder.jpg" width=58%>
 </p>
 
 <p align="center">
@@ -61,7 +61,7 @@ See the up-to-date checklist below.
 </p>
 
 <p align="center">
-  <img alt="SigLip ViT — image encoder forward flow" src="docs/assets/vit-process-1.png" width=58%>
+  <img alt="SigLip ViT - image encoder forward flow" src="https://cdn.jsdelivr.net/gh/yukki3421/YuePi0@main/docs/assets/vit-process-1.png" width=58%>
 </p>
 
 <p align="center">
@@ -69,7 +69,7 @@ See the up-to-date checklist below.
 </p>
 
 <p align="center">
-  <img alt="Three-expert joint attention — single transformer layer flow" src="docs/assets/expert-process-1.png" width=58%>
+  <img alt="Three-expert joint attention - single transformer layer flow" src="https://cdn.jsdelivr.net/gh/yukki3421/YuePi0@main/docs/assets/expert-process-1.png" width=58%>
 </p>
 
 <p align="center">
